@@ -1,19 +1,26 @@
 {
   "name": "postman-bootstrap-action",
   "version": "0.1.0-beta.0",
-  "description": "Public beta scaffold for the Postman bootstrap GitHub Action.",
+  "description": "Public beta Postman bootstrap GitHub Action.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": [
     "github-action",
     "postman"
   ],
   "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/exec": "^1.1.1",
+    "@actions/io": "^1.1.3"
+  },
   "devDependencies": {
+    "esbuild": "^0.27.3",
     "@types/node": "^25.3.5",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18",

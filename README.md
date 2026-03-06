@@ -1,34 +1,69 @@
 # postman-bootstrap-action
 
-Phase 1 scaffold for the public beta JavaScript action that bootstraps Postman assets from an OpenAPI spec.
+Public beta GitHub Action for Postman workspace bootstrap from a registry-backed OpenAPI spec.
 
-## Beta contract
+## Scope
 
-The public beta keeps the bootstrap core from `api-catalog-demo-infra/.github/actions/postman-bootstrap` and normalizes it into a stable surface with kebab-case inputs and outputs.
+This action preserves the bootstrap slice of the API Catalog demo flow:
 
-`integration-backend` defaults to `bifrost` in this beta contract.
+- create a Postman workspace
+- assign the workspace to a governance group through the current Bifrost and internal path
+- invite the requester and add workspace admins
+- upload a remote spec to Spec Hub
+- lint the uploaded spec by UID with the Postman CLI
+- generate baseline, smoke, and contract collections sequentially
+- inject generated tests and apply collection tags
+- persist bootstrap repo variables needed by downstream sync work
 
-Retained behavior:
-- create a Postman workspace for the service
-- assign the workspace to a governance group through the current internal path
-- invite the requester to the workspace
-- add configured workspace admins
-- upload the remote spec to Spec Hub
-- lint the uploaded spec by UID
-- generate and tag baseline, smoke, and contract collections
-- persist the bootstrap identifiers needed by downstream sync work
-- emit workspace, spec, and collection identifiers as action outputs
+The public beta contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
-Removed behavior:
-- snake_case action input and output names
-- step-by-step resume mode and precomputed UID resume inputs
-- AWS, Docker, and infra workflow responsibilities
-- legacy placeholder inputs such as `team-id` and runtime-coupled workflow knobs
-- internal workflow-only tuning knobs from the infra repo
+## Usage
 
-## Local usage
+```yaml
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: postman-cs/postman-bootstrap-action@v0
+        with:
+          project-name: core-payments
+          domain: core-banking
+          domain-code: AF
+          requester-email: owner@example.com
+          workspace-admin-user-ids: 101,102
+          spec-url: https://example.com/openapi.yaml
+          environments-json: '["prod","stage"]'
+          system-env-map-json: '{"prod":"uuid-prod","stage":"uuid-stage"}'
+          governance-mapping-json: '{"core-banking":"Core Banking"}'
+          postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+          postman-access-token: ${{ secrets.POSTMAN_ACCESS_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-fallback-token: ${{ secrets.GH_FALLBACK_TOKEN }}
+```
+
+## Outputs
+
+- `workspace-id`
+- `workspace-url`
+- `workspace-name`
+- `spec-id`
+- `baseline-collection-id`
+- `smoke-collection-id`
+- `contract-collection-id`
+- `collections-json`
+- `lint-summary-json`
+
+## Local development
 
 ```bash
 npm install
 npm test
+npm run typecheck
+npm run build
 ```
+
+`npm run build` produces the committed `dist/index.js` action bundle used by `action.yml`.

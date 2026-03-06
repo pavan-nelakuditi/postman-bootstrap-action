@@ -85,11 +85,12 @@ describe('beta action contract', () => {
       'collections-json': JSON.stringify({
         baseline: '',
         smoke: '',
-        contract: '',
-        environments: '["prod"]'
+        contract: ''
       }),
       'lint-summary-json': JSON.stringify({
         errors: 0,
+        total: 0,
+        violations: [],
         warnings: 0
       })
     });
