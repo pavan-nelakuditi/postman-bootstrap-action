@@ -6,6 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js",
+    "check:dist": "npm run build && git diff --exit-code -- dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

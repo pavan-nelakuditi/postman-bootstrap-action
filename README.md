@@ -67,3 +67,13 @@ npm run build
 ```
 
 `npm run build` produces the committed `dist/index.js` action bundle used by `action.yml`.
+
+## Beta Release Strategy
+
+- Beta channel tags use `v0.x.y`.
+- Consumers can pin immutable tags such as `v0.2.0` for reproducibility.
+- Moving tag `v0` is used only as the rolling beta channel.
+
+## REST Migration Seam
+
+Public inputs and outputs are backend-neutral. `integration-backend` currently supports `bifrost`, and backend-specific metadata stays internal so a future REST backend can replace the implementation without changing caller workflow syntax.
