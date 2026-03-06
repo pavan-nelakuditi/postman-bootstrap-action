@@ -3,10 +3,10 @@
   "version": "0.1.0-beta.0",
   "description": "Public beta Postman bootstrap GitHub Action.",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "scripts": {
-    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js",
-    "check:dist": "npm run build && git diff --exit-code -- dist/index.js",
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.cjs",
+    "check:dist": "npm run build && git diff --exit-code -- dist/index.cjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

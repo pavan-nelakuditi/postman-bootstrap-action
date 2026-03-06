@@ -66,7 +66,7 @@ npm run typecheck
 npm run build
 ```
 
-`npm run build` produces the committed `dist/index.js` action bundle used by `action.yml`.
+`npm run build` produces the committed `dist/index.cjs` action bundle used by `action.yml`.
 
 ## Beta Release Strategy
 

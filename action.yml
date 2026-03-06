@@ -72,4 +72,4 @@ outputs:
     description: JSON summary of lint errors and warnings
 runs:
   using: node20
-  main: dist/index.js
+  main: dist/index.cjs

@@ -1,7 +1,6 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
-import { fileURLToPath } from 'node:url';
 
 import { betaActionContract } from './contracts.js';
 import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
@@ -712,7 +711,7 @@ export async function runAction(
   });
 }
 
-const currentModulePath = fileURLToPath(import.meta.url);
+const currentModulePath = typeof __filename === 'string' ? __filename : '';
 const entrypoint = process.argv[1];
 
 if (entrypoint && currentModulePath === entrypoint) {
