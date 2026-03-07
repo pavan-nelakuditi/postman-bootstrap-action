@@ -6,12 +6,12 @@ Public beta GitHub Action for Postman workspace bootstrap from a registry-backed
 
 This action preserves the bootstrap slice of the API Catalog demo flow:
 
-- create a Postman workspace
+- create or reuse a Postman workspace
 - assign the workspace to a governance group through the current Bifrost and internal path
 - invite the requester and add workspace admins
-- upload a remote spec to Spec Hub
+- upload or update a remote spec in Spec Hub
 - lint the uploaded spec by UID with the Postman CLI
-- generate baseline, smoke, and contract collections sequentially
+- generate missing baseline, smoke, and contract collections or reuse existing ones
 - inject generated tests and apply collection tags
 - persist bootstrap repo variables needed by downstream sync work
 
@@ -61,6 +61,33 @@ jobs:
           spec-url: https://example.com/openapi.yaml
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
+
+If you want the action to discover prior bootstrap state automatically on reruns, provide a `github-token` so it can read the stored repository variables before creating new Postman assets.
+
+## Inputs
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `workspace-id` | | Reuse an existing Postman workspace instead of creating one. |
+| `spec-id` | | Update an existing Postman spec instead of uploading a new one. |
+| `baseline-collection-id` | | Reuse an existing baseline collection. |
+| `smoke-collection-id` | | Reuse an existing smoke collection. |
+| `contract-collection-id` | | Reuse an existing contract collection. |
+| `project-name` | | Service name used in workspace and asset naming. |
+| `domain` | | Business domain used for governance assignment. |
+| `domain-code` | | Short prefix used when constructing the workspace name. |
+| `requester-email` | | Optional user invited into the workspace. |
+| `workspace-admin-user-ids` | | Comma-separated Postman user IDs to grant admin access. |
+| `spec-url` | | Required registry-backed OpenAPI document URL. |
+| `environments-json` | `["prod"]` | Environment slugs preserved in outputs and repo variables. |
+| `system-env-map-json` | `{}` | Map of environment slug to system environment ID. |
+| `governance-mapping-json` | `{}` | Map of domain to governance group name. |
+| `postman-api-key` | | Required for all Postman asset operations. |
+| `postman-access-token` | | Required for governance assignment and workspace mutations that use the internal integration path. |
+| `github-token` | | Enables repository variable persistence and rerun fallback discovery. |
+| `gh-fallback-token` | | Optional fallback token for repository variable APIs. |
+| `github-auth-mode` | `github_token_first` | Auth mode for repository variable APIs. |
+| `integration-backend` | `bifrost` | Current public beta backend. |
 
 ## Outputs
 
