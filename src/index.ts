@@ -11,6 +11,11 @@ import { createSecretMasker } from './lib/secrets.js';
 
 export interface ResolvedInputs {
   projectName: string;
+  workspaceId?: string;
+  specId?: string;
+  baselineCollectionId?: string;
+  smokeCollectionId?: string;
+  contractCollectionId?: string;
   domain?: string;
   domainCode?: string;
   requesterEmail?: string;
@@ -90,7 +95,7 @@ export interface BootstrapExecutionDependencies {
     'error' | 'group' | 'info' | 'setOutput' | 'warning'
   >;
   exec: ExecLike;
-  github?: Pick<GitHubApiClient, 'setRepositoryVariable'>;
+  github?: Pick<GitHubApiClient, 'setRepositoryVariable' | 'getRepositoryVariable'>;
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
@@ -105,6 +110,7 @@ export interface BootstrapExecutionDependencies {
     | 'inviteRequesterToWorkspace'
     | 'tagCollection'
     | 'uploadSpec'
+    | 'updateSpec'
   >;
   specFetcher: typeof fetch;
 }
@@ -192,6 +198,11 @@ export function resolveInputs(
 
   return {
     projectName: getInput('project-name', env) ?? '',
+    workspaceId: getInput('workspace-id', env),
+    specId: getInput('spec-id', env),
+    baselineCollectionId: getInput('baseline-collection-id', env),
+    smokeCollectionId: getInput('smoke-collection-id', env),
+    contractCollectionId: getInput('contract-collection-id', env),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
@@ -265,6 +276,11 @@ export function readActionInputs(
 
   const inputs = resolveInputs({
     INPUT_PROJECT_NAME: projectName,
+    INPUT_WORKSPACE_ID: optionalInput(actionCore, 'workspace-id'),
+    INPUT_SPEC_ID: optionalInput(actionCore, 'spec-id'),
+    INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, 'baseline-collection-id'),
+    INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
+    INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
@@ -338,7 +354,7 @@ export async function lintSpecViaCli(
       'lint',
       specId,
       '--workspace-id',
-      workspaceId,
+      workspaceId || '',
       '--report-events',
       '-o',
       'json'
@@ -452,14 +468,27 @@ export async function runBootstrap(
     await ensurePostmanCli(dependencies, inputs.postmanApiKey);
   });
 
-  const workspace = await runGroup(
-    dependencies.core,
-    'Create Postman Workspace',
-    async () => dependencies.postman.createWorkspace(workspaceName, aboutText)
-  );
-  outputs['workspace-id'] = workspace.id;
-  outputs['workspace-url'] = `https://go.postman.co/workspace/${workspace.id}`;
+  
+  let workspaceId = inputs.workspaceId;
+  if (!workspaceId && dependencies.github) {
+    workspaceId = await dependencies.github.getRepositoryVariable('POSTMAN_WORKSPACE_ID').catch(() => undefined) || undefined;
+  }
+
+  if (!workspaceId) {
+    const workspace = await runGroup(
+      dependencies.core,
+      'Create Postman Workspace',
+      async () => dependencies.postman.createWorkspace(workspaceName, aboutText)
+    );
+    workspaceId = workspace.id;
+  } else {
+    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+  }
+  
+  outputs['workspace-id'] = workspaceId || '';
+  outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
+
 
   if (inputs.domain && dependencies.internalIntegration) {
     await runGroup(
@@ -468,7 +497,7 @@ export async function runBootstrap(
       async () => {
         try {
           await dependencies.internalIntegration?.assignWorkspaceToGovernanceGroup(
-            workspace.id,
+            workspaceId || '',
             inputs.domain || '',
             inputs.governanceMappingJson
           );
@@ -490,7 +519,7 @@ export async function runBootstrap(
       async () => {
         try {
           await dependencies.postman.inviteRequesterToWorkspace(
-            workspace.id,
+            workspaceId || '',
             inputs.requesterEmail || ''
           );
         } catch (error) {
@@ -512,7 +541,7 @@ export async function runBootstrap(
       'Add Team Admins to Workspace',
       async () => {
         try {
-          await dependencies.postman.addAdminsToWorkspace(workspace.id, adminIds);
+          await dependencies.postman.addAdminsToWorkspace(workspaceId || '', adminIds);
         } catch (error) {
           dependencies.core.warning(
             `Failed to add team admins: ${
@@ -524,26 +553,62 @@ export async function runBootstrap(
     );
   }
 
+  
+  let specId = inputs.specId;
+  if (!specId && dependencies.github) {
+    specId = await dependencies.github.getRepositoryVariable('POSTMAN_SPEC_UID').catch(() => undefined) || undefined;
+  }
+
+  let baselineCollectionId = inputs.baselineCollectionId;
+  let smokeCollectionId = inputs.smokeCollectionId;
+  let contractCollectionId = inputs.contractCollectionId;
+
+  if (dependencies.github) {
+    if (!baselineCollectionId) {
+      baselineCollectionId =
+        (await dependencies.github
+          .getRepositoryVariable('POSTMAN_BASELINE_COLLECTION_UID')
+          .catch(() => undefined)) || undefined;
+    }
+    if (!smokeCollectionId) {
+      smokeCollectionId =
+        (await dependencies.github
+          .getRepositoryVariable('POSTMAN_SMOKE_COLLECTION_UID')
+          .catch(() => undefined)) || undefined;
+    }
+    if (!contractCollectionId) {
+      contractCollectionId =
+        (await dependencies.github
+          .getRepositoryVariable('POSTMAN_CONTRACT_COLLECTION_UID')
+          .catch(() => undefined)) || undefined;
+    }
+  }
+
   const specContent = await runGroup(
     dependencies.core,
-    'Upload Spec to Spec Hub',
+    specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
     async () => {
       const document = await fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
-      const specId = await dependencies.postman.uploadSpec(
-        workspace.id,
-        inputs.projectName,
-        document
-      );
+      if (specId) {
+        await dependencies.postman.updateSpec(specId, document);
+      } else {
+        specId = await dependencies.postman.uploadSpec(
+          workspaceId || '',
+          inputs.projectName,
+          document
+        );
+      }
       outputs['spec-id'] = specId;
       return document;
     }
   );
+
   void specContent;
 
   const lintSummary = await runGroup(
     dependencies.core,
     'Lint Spec via Postman CLI',
-    async () => lintSpecViaCli(dependencies, workspace.id, outputs['spec-id'])
+    async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
   );
   outputs['lint-summary-json'] = JSON.stringify({
     errors: lintSummary.errors,
@@ -573,21 +638,45 @@ export async function runBootstrap(
     dependencies.core,
     'Generate Collections from Spec',
     async () => {
-      outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
-        outputs['spec-id'],
-        inputs.projectName,
-        '[Baseline]'
-      );
-      outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
-        outputs['spec-id'],
-        inputs.projectName,
-        '[Smoke]'
-      );
-      outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
-        outputs['spec-id'],
-        inputs.projectName,
-        '[Contract]'
-      );
+      outputs['baseline-collection-id'] = baselineCollectionId || '';
+      outputs['smoke-collection-id'] = smokeCollectionId || '';
+      outputs['contract-collection-id'] = contractCollectionId || '';
+
+      if (!outputs['baseline-collection-id']) {
+        outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
+          outputs['spec-id'],
+          inputs.projectName,
+          '[Baseline]'
+        );
+      } else {
+        dependencies.core.info(
+          `Using existing baseline collection: ${outputs['baseline-collection-id']}`
+        );
+      }
+
+      if (!outputs['smoke-collection-id']) {
+        outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
+          outputs['spec-id'],
+          inputs.projectName,
+          '[Smoke]'
+        );
+      } else {
+        dependencies.core.info(
+          `Using existing smoke collection: ${outputs['smoke-collection-id']}`
+        );
+      }
+
+      if (!outputs['contract-collection-id']) {
+        outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
+          outputs['spec-id'],
+          inputs.projectName,
+          '[Contract]'
+        );
+      } else {
+        dependencies.core.info(
+          `Using existing contract collection: ${outputs['contract-collection-id']}`
+        );
+      }
     }
   );
 

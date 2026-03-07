@@ -17,6 +17,8 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 
 The public beta contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
+For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When GitHub repo variable persistence is enabled, the action also falls back to `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, `POSTMAN_BASELINE_COLLECTION_UID`, `POSTMAN_SMOKE_COLLECTION_UID`, and `POSTMAN_CONTRACT_COLLECTION_UID` on reruns.
+
 ## Usage
 
 ```yaml
@@ -43,6 +45,21 @@ jobs:
           postman-access-token: ${{ secrets.POSTMAN_ACCESS_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-fallback-token: ${{ secrets.GH_FALLBACK_TOKEN }}
+
+  bootstrap-existing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: postman-cs/postman-bootstrap-action@v0
+        with:
+          project-name: core-payments
+          workspace-id: ws-123
+          spec-id: spec-123
+          baseline-collection-id: col-baseline
+          smoke-collection-id: col-smoke
+          contract-collection-id: col-contract
+          spec-url: https://example.com/openapi.yaml
+          postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
 
 ## Outputs

@@ -22,6 +22,27 @@ export const betaActionContract: BetaActionContract = {
   name: 'postman-bootstrap-action',
   description: 'Public beta contract for bootstrapping Postman assets from a registry-backed spec.',
   inputs: {
+
+    'workspace-id': {
+      description: 'Existing Postman workspace ID.',
+      required: false
+    },
+    'spec-id': {
+      description: 'Existing Postman spec ID.',
+      required: false
+    },
+    'baseline-collection-id': {
+      description: 'Existing baseline collection ID.',
+      required: false
+    },
+    'smoke-collection-id': {
+      description: 'Existing smoke collection ID.',
+      required: false
+    },
+    'contract-collection-id': {
+      description: 'Existing contract collection ID.',
+      required: false
+    },
     'project-name': {
       description: 'Service project name.',
       required: true
