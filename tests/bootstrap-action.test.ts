@@ -122,6 +122,7 @@ describe('bootstrap action', () => {
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi
         .fn()
         .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
@@ -130,6 +131,7 @@ describe('bootstrap action', () => {
           if (prefix === '[Smoke]') return 'col-smoke';
           return 'col-contract';
         }),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -225,7 +227,9 @@ describe('bootstrap action', () => {
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
@@ -255,7 +259,9 @@ describe('bootstrap action', () => {
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -319,7 +325,9 @@ describe('bootstrap action', () => {
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),

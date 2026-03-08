@@ -102,25 +102,61 @@ export class GitHubApiClient {
     );
   }
 
+  private rateLimitDelayMs(response: Response, attempt: number): number {
+    const retryAfter = Number(response.headers.get('retry-after') || '');
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1000, 120_000);
+    }
+
+    const resetAtSeconds = Number(response.headers.get('x-ratelimit-reset') || '');
+    if (Number.isFinite(resetAtSeconds) && resetAtSeconds > 0) {
+      const delta = resetAtSeconds * 1000 - Date.now();
+      if (delta > 0) {
+        return Math.min(delta + 250, 120_000);
+      }
+    }
+
+    const base = Math.min(5000 * Math.pow(2, attempt), 120_000);
+    const jitter = Math.floor(Math.random() * 250);
+    return Math.min(base + jitter, 120_000);
+  }
+
   private async requestWithToken(
     path: string,
     init: RequestInit,
     token: string
   ): Promise<Response> {
+    const MAX_RETRIES = 5;
     const normalizedToken = String(token || '').trim();
     if (!normalizedToken) {
       throw new Error(`Missing GitHub auth token for request ${path}`);
     }
 
-    return this.fetchImpl(`${this.apiBase}${path}`, {
-      ...init,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${normalizedToken}`,
-        'Content-Type': 'application/json',
-        ...(init.headers || {})
+    for (let attempt = 0; ; attempt++) {
+      const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+        ...init,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${normalizedToken}`,
+          'Content-Type': 'application/json',
+          ...(init.headers || {})
+        }
+      });
+
+      if (attempt < MAX_RETRIES && (response.status === 403 || response.status === 429)) {
+        const body = await response.clone().text().catch(() => '');
+        if (isRateLimitedResponse(response, body)) {
+          const delay = this.rateLimitDelayMs(response, attempt);
+          console.log(
+            `GitHub API rate limited, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
       }
-    });
+
+      return response;
+    }
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -207,4 +243,20 @@ export class GitHubApiClient {
     const data = (await response.json()) as { value?: string };
     return String(data.value || '');
   }
+}
+
+function isRateLimitedResponse(response: Response, body: string): boolean {
+  if (response.status !== 403 && response.status !== 429) return false;
+
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  const retryAfter = response.headers.get('retry-after');
+
+  if (remaining === '0') return true;
+  if (retryAfter) return true;
+
+  const message = body.toLowerCase();
+  if (message.includes('secondary rate limit')) return true;
+  if (message.includes('api rate limit exceeded')) return true;
+
+  return response.status === 429;
 }

@@ -1,4 +1,5 @@
 import { HttpError } from '../http-error.js';
+import { normalizeGitHubRepoUrl } from './postman-assets-client.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 
 export type InternalIntegrationBackend = 'bifrost';
@@ -168,6 +169,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     repoUrl: string
   ): Promise<void> {
     const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-access-token': this.accessToken,
+      'x-entity-team-id': this.teamId
+    };
     const payload = {
       service: 'workspaces',
       method: 'POST',
@@ -181,25 +187,61 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
 
     const response = await this.fetchImpl(url, {
       method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (response.ok) return;
+
+    if (response.status === 400) {
+      const body = await response.text();
+      if (body.includes('invalidParamError') && body.includes('already exists')) {
+        const linkedUrl = await this.getWorkspaceGitRepoUrl(workspaceId);
+        if (normalizeGitHubRepoUrl(linkedUrl) === normalizeGitHubRepoUrl(repoUrl)) {
+          return;
+        }
+        throw new Error(
+          `Bifrost link already exists for workspace ${workspaceId}, but linked to a different repo`
+        );
+      }
+    }
+
+    throw await HttpError.fromResponse(response, {
+      method: 'POST',
+      requestHeaders: headers,
+      secretValues: [this.accessToken],
+      url
+    });
+  }
+
+  private async getWorkspaceGitRepoUrl(workspaceId: string): Promise<string | null> {
+    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-access-token': this.accessToken,
         'x-entity-team-id': this.teamId
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        service: 'workspaces',
+        method: 'GET',
+        path: `/workspaces/${workspaceId}/filesystem`
+      })
     });
 
-    if (!response.ok) {
-      throw await HttpError.fromResponse(response, {
-        method: 'POST',
-        requestHeaders: {
-          'Content-Type': 'application/json',
-          'x-access-token': this.accessToken,
-          'x-entity-team-id': this.teamId
-        },
-        secretValues: [this.accessToken],
-        url
-      });
+    if (response.status === 404) return null;
+    if (!response.ok) return null;
+
+    const body = await response.text();
+    if (!body.trim()) return null;
+
+    try {
+      const data = JSON.parse(body);
+      const repo = data?.repo || data?.repository || data?.repoUrl;
+      return typeof repo === 'string' ? repo : null;
+    } catch {
+      return null;
     }
   }
 }

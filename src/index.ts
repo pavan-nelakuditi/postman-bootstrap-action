@@ -6,6 +6,7 @@ import { betaActionContract } from './contracts.js';
 import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
+import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker } from './lib/secrets.js';
 
@@ -105,7 +106,9 @@ export interface BootstrapExecutionDependencies {
     PostmanAssetsClient,
     | 'addAdminsToWorkspace'
     | 'createWorkspace'
+    | 'findWorkspacesByName'
     | 'generateCollection'
+    | 'getWorkspaceGitRepoUrl'
     | 'injectTests'
     | 'inviteRequesterToWorkspace'
     | 'tagCollection'
@@ -473,6 +476,39 @@ export async function runBootstrap(
     workspaceId = await dependencies.github.getRepositoryVariable('POSTMAN_WORKSPACE_ID').catch(() => undefined) || undefined;
   }
 
+  const teamId = process.env.POSTMAN_TEAM_ID || '';
+  const repoUrl = process.env.GITHUB_REPOSITORY
+    ? `https://github.com/${process.env.GITHUB_REPOSITORY}`
+    : '';
+
+  if (!workspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
+    const selection = await runGroup(
+      dependencies.core,
+      'Resolve Canonical Workspace',
+      async () => resolveCanonicalWorkspaceSelection({
+        postman: dependencies.postman,
+        workspaceName,
+        repoWorkspaceId: undefined,
+        repoUrl,
+        teamId,
+        accessToken: inputs.postmanAccessToken!,
+        warn: (msg) => dependencies.core.warning(msg),
+      })
+    );
+
+    if (selection.type === 'existing') {
+      workspaceId = selection.workspaceId;
+      if (selection.warning) {
+        dependencies.core.warning(selection.warning);
+      }
+      dependencies.core.info(`Using canonical workspace (${selection.source}): ${workspaceId}`);
+    } else if (selection.type === 'manual_review') {
+      throw new Error(`Workspace selection requires manual review: ${selection.reason}`);
+    }
+  } else if (workspaceId) {
+    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+  }
+
   if (!workspaceId) {
     const workspace = await runGroup(
       dependencies.core,
@@ -480,8 +516,6 @@ export async function runBootstrap(
       async () => dependencies.postman.createWorkspace(workspaceName, aboutText)
     );
     workspaceId = workspace.id;
-  } else {
-    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
   }
 
   outputs['workspace-id'] = workspaceId || '';

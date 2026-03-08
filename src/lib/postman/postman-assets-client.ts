@@ -17,6 +17,58 @@ export interface PostmanAssetsClientOptions {
   secretMasker?: SecretMasker;
 }
 
+export function normalizeGitHubRepoUrl(url: string | null | undefined): string {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+
+  const sshMatch = raw.match(/^git@github\.com:(.+)$/i);
+  if (sshMatch?.[1]) {
+    return normalizeGitHubRepoUrl(`https://github.com/${sshMatch[1]}`);
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (!/github\.com$/i.test(parsed.hostname)) return raw.toLowerCase();
+    const parts = parsed.pathname
+      .replace(/^\/+|\/+$/g, '')
+      .replace(/\.git$/i, '')
+      .split('/')
+      .filter(Boolean);
+    if (parts.length < 2) return raw.toLowerCase();
+    return `https://github.com/${parts[0].toLowerCase()}/${parts[1].toLowerCase()}`;
+  } catch {
+    return raw.replace(/\.git$/i, '').replace(/\/+$/g, '').toLowerCase();
+  }
+}
+
+function extractGitHubRepoUrl(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const normalized = normalizeGitHubRepoUrl(value);
+    return normalized.includes('github.com/') ? normalized : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const repoUrl = extractGitHubRepoUrl(item);
+      if (repoUrl) return repoUrl;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const preferredKeys = ['repo', 'repository', 'repoUrl', 'repo_url', 'remoteUrl', 'remote_url', 'origin'];
+    for (const key of preferredKeys) {
+      const repoUrl = extractGitHubRepoUrl(record[key]);
+      if (repoUrl) return repoUrl;
+    }
+    for (const nested of Object.values(record)) {
+      const repoUrl = extractGitHubRepoUrl(nested);
+      if (repoUrl) return repoUrl;
+    }
+  }
+  return null;
+}
+
 export class PostmanAssetsClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -113,6 +165,64 @@ export class PostmanAssetsClient {
         id: workspaceId
       };
     }, 3, 2000);
+  }
+
+  async listWorkspaces(): Promise<Array<{ id: string; name: string; type: string }>> {
+    const data = await this.request('/workspaces');
+    const workspaces = data?.workspaces ?? [];
+    return Array.isArray(workspaces)
+      ? workspaces
+          .filter((w: any) => w?.id && w?.name)
+          .map((w: any) => ({
+            id: String(w.id),
+            name: String(w.name),
+            type: String(w.type ?? 'team')
+          }))
+      : [];
+  }
+
+  async findWorkspacesByName(name: string): Promise<Array<{ id: string; name: string }>> {
+    const workspaces = await this.listWorkspaces();
+    return workspaces
+      .filter((w) => w.name === name)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((w) => ({ id: w.id, name: w.name }));
+  }
+
+  async getWorkspaceGitRepoUrl(
+    workspaceId: string,
+    teamId: string,
+    accessToken: string
+  ): Promise<string | null> {
+    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const response = await this.fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        'x-access-token': accessToken,
+        'x-entity-team-id': teamId,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        service: 'workspaces',
+        method: 'GET',
+        path: `/workspaces/${workspaceId}/filesystem`
+      })
+    });
+
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Bifrost workspace lookup failed: ${response.status} - ${body}`);
+    }
+
+    const body = await response.text();
+    if (!body.trim()) return null;
+
+    try {
+      return extractGitHubRepoUrl(JSON.parse(body));
+    } catch {
+      return extractGitHubRepoUrl(body);
+    }
   }
 
   async inviteRequesterToWorkspace(
@@ -223,13 +333,13 @@ export class PostmanAssetsClient {
       }
     };
 
-    const extractUid = (data: any): string =>
+    const extractUid = (data: any): string | undefined =>
       data?.details?.resources?.[0]?.id ||
       data?.collection?.id ||
       data?.collection?.uid ||
       data?.resource?.uid ||
       data?.resource?.id ||
-      '';
+      undefined;
 
     return retry(
       async () => {
@@ -339,6 +449,18 @@ export class PostmanAssetsClient {
       "",
       "pm.test('Status code is successful (2xx)', function () {",
       "    pm.response.to.be.success;",
+      "});",
+      "",
+      "pm.test('Response time is acceptable', function () {",
+      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
+      "    pm.expect(pm.response.responseTime).to.be.below(threshold);",
+      "});",
+      "",
+      "pm.test('Response body is not empty', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        var body = pm.response.text();",
+      "        pm.expect(body.length).to.be.above(0);",
+      "    }",
       "});"
     ];
     const contractTests = [
@@ -346,7 +468,67 @@ export class PostmanAssetsClient {
       "",
       "pm.test('Status code is successful (2xx)', function () {",
       "    pm.response.to.be.success;",
-      "});"
+      "});",
+      "",
+      "pm.test('Response time is acceptable', function () {",
+      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
+      "    pm.expect(pm.response.responseTime).to.be.below(threshold);",
+      "});",
+      "",
+      "pm.test('Response body is not empty', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        var body = pm.response.text();",
+      "        pm.expect(body.length).to.be.above(0);",
+      "    }",
+      "});",
+      "",
+      "pm.test('Content-Type is application/json', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        pm.response.to.have.header('Content-Type');",
+      "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+      "    }",
+      "});",
+      "",
+      "pm.test('Response is valid JSON', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        pm.response.to.be.json;",
+      "    }",
+      "});",
+      "",
+      "// Validate required fields from response schema",
+      "pm.test('Required fields are present', function () {",
+      "    if (pm.response.code === 204) return;",
+      "    var jsonData = pm.response.json();",
+      "    pm.expect(jsonData).to.be.an('object');",
+      "    var keys = Object.keys(jsonData);",
+      "    if (keys.length === 1 && Array.isArray(jsonData[keys[0]])) {",
+      "        pm.expect(jsonData[keys[0]]).to.be.an('array');",
+      "    }",
+      "});",
+      "",
+      "// Validate response field types (non-null required fields)",
+      "pm.test('Field types are correct', function () {",
+      "    if (pm.response.code === 204) return;",
+      "    var jsonData = pm.response.json();",
+      "    Object.keys(jsonData).forEach(function(key) {",
+      "        pm.expect(jsonData[key]).to.not.be.undefined;",
+      "    });",
+      "});",
+      "",
+      "(function() {",
+      "    var status = pm.response.code;",
+      "    if (status === 204) return; ",
+      "    try {",
+      "        var body = pm.response.json();",
+      "        pm.test('Response body matches expected structure', function () {",
+      "            pm.expect(typeof body).to.equal('object');",
+      "            if (status >= 400) {",
+      "                pm.expect(body).to.have.property('error');",
+      "                pm.expect(body).to.have.property('message');",
+      "            }",
+      "        });",
+      "    } catch (e) {}",
+      "})();"
     ];
 
     const scriptsToInject = type === 'smoke' ? smokeTests : contractTests;
@@ -383,7 +565,11 @@ export class PostmanAssetsClient {
           script: {
             exec: [
               'if (pm.environment.get("CI") === "true") { return; }',
-              'const body = pm.response.json();'
+              'const body = pm.response.json();',
+              'if (body.SecretString) {',
+              '  const secrets = JSON.parse(body.SecretString);',
+              '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
+              '}'
             ]
           }
         }

@@ -21603,20 +21603,51 @@ var GitHubApiClient = class {
   canUseFallback(path) {
     return this.isVariablesEndpoint(path) || path.includes(`/repos/${this.owner}/${this.repo}/contents`) || path.includes("/dispatches");
   }
+  rateLimitDelayMs(response, attempt) {
+    const retryAfter = Number(response.headers.get("retry-after") || "");
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1e3, 12e4);
+    }
+    const resetAtSeconds = Number(response.headers.get("x-ratelimit-reset") || "");
+    if (Number.isFinite(resetAtSeconds) && resetAtSeconds > 0) {
+      const delta = resetAtSeconds * 1e3 - Date.now();
+      if (delta > 0) {
+        return Math.min(delta + 250, 12e4);
+      }
+    }
+    const base = Math.min(5e3 * Math.pow(2, attempt), 12e4);
+    const jitter = Math.floor(Math.random() * 250);
+    return Math.min(base + jitter, 12e4);
+  }
   async requestWithToken(path, init, token) {
+    const MAX_RETRIES = 5;
     const normalizedToken = String(token || "").trim();
     if (!normalizedToken) {
       throw new Error(`Missing GitHub auth token for request ${path}`);
     }
-    return this.fetchImpl(`${this.apiBase}${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${normalizedToken}`,
-        "Content-Type": "application/json",
-        ...init.headers || {}
+    for (let attempt = 0; ; attempt++) {
+      const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+        ...init,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${normalizedToken}`,
+          "Content-Type": "application/json",
+          ...init.headers || {}
+        }
+      });
+      if (attempt < MAX_RETRIES && (response.status === 403 || response.status === 429)) {
+        const body = await response.clone().text().catch(() => "");
+        if (isRateLimitedResponse(response, body)) {
+          const delay = this.rateLimitDelayMs(response, attempt);
+          console.log(
+            `GitHub API rate limited, retrying in ${Math.ceil(delay / 1e3)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
       }
-    });
+      return response;
+    }
   }
   async request(path, init = {}) {
     const orderedTokens = this.getTokenOrder();
@@ -21683,6 +21714,17 @@ var GitHubApiClient = class {
     return String(data.value || "");
   }
 };
+function isRateLimitedResponse(response, body) {
+  if (response.status !== 403 && response.status !== 429) return false;
+  const remaining = response.headers.get("x-ratelimit-remaining");
+  const retryAfter = response.headers.get("retry-after");
+  if (remaining === "0") return true;
+  if (retryAfter) return true;
+  const message = body.toLowerCase();
+  if (message.includes("secondary rate limit")) return true;
+  if (message.includes("api rate limit exceeded")) return true;
+  return response.status === 429;
+}
 
 // src/lib/http-error.ts
 function truncate(value, limit) {
@@ -21741,159 +21783,6 @@ var HttpError = class _HttpError extends Error {
     };
   }
 };
-
-// src/lib/postman/internal-integration-adapter.ts
-var BifrostInternalIntegrationAdapter = class {
-  accessToken;
-  fetchImpl;
-  secretMasker;
-  teamId;
-  workerBaseUrl;
-  constructor(options) {
-    this.accessToken = String(options.accessToken || "").trim();
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
-    this.teamId = String(options.teamId || "").trim();
-    this.workerBaseUrl = String(
-      options.workerBaseUrl || "https://catalog-admin.postman-account2009.workers.dev"
-    ).replace(/\/+$/, "");
-  }
-  async assignWorkspaceToGovernanceGroup(workspaceId, domain, mappingJson) {
-    let mapping;
-    try {
-      mapping = JSON.parse(mappingJson || "{}");
-    } catch {
-      return;
-    }
-    const groupName = String(mapping[domain] || "").trim();
-    if (!groupName) {
-      return;
-    }
-    const listResponse = await this.fetchImpl(
-      "https://gateway.postman.com/configure/workspace-groups",
-      {
-        headers: {
-          "x-access-token": this.accessToken
-        }
-      }
-    );
-    if (!listResponse.ok) {
-      throw await HttpError.fromResponse(listResponse, {
-        method: "GET",
-        requestHeaders: {
-          "x-access-token": this.accessToken
-        },
-        secretValues: [this.accessToken],
-        url: "https://gateway.postman.com/configure/workspace-groups"
-      });
-    }
-    const groups = await listResponse.json();
-    const group = groups.data?.find((entry) => entry.name === groupName);
-    if (!group?.id) {
-      return;
-    }
-    const patchResponse = await this.fetchImpl(
-      `https://gateway.postman.com/configure/workspace-groups/${group.id}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-access-token": this.accessToken
-        },
-        body: JSON.stringify({
-          workspaces: [workspaceId]
-        })
-      }
-    );
-    if (!patchResponse.ok) {
-      throw await HttpError.fromResponse(patchResponse, {
-        method: "PATCH",
-        requestHeaders: {
-          "Content-Type": "application/json",
-          "x-access-token": this.accessToken
-        },
-        secretValues: [this.accessToken],
-        url: `https://gateway.postman.com/configure/workspace-groups/${group.id}`
-      });
-    }
-  }
-  async associateSystemEnvironments(workspaceId, associations) {
-    if (associations.length === 0) {
-      return;
-    }
-    const response = await this.fetchImpl(
-      `${this.workerBaseUrl}/api/internal/system-envs/associate`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          workspace_id: workspaceId,
-          associations: associations.map((entry) => ({
-            env_uid: entry.envUid,
-            system_env_id: entry.systemEnvId
-          }))
-        })
-      }
-    );
-    if (!response.ok) {
-      throw await HttpError.fromResponse(response, {
-        method: "POST",
-        requestHeaders: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json"
-        },
-        secretValues: [this.accessToken],
-        url: `${this.workerBaseUrl}/api/internal/system-envs/associate`
-      });
-    }
-  }
-  async connectWorkspaceToRepository(workspaceId, repoUrl) {
-    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
-    const payload = {
-      service: "workspaces",
-      method: "POST",
-      path: `/workspaces/${workspaceId}/filesystem`,
-      body: {
-        path: "/",
-        repo: repoUrl,
-        versionControl: true
-      }
-    };
-    const response = await this.fetchImpl(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-access-token": this.accessToken,
-        "x-entity-team-id": this.teamId
-      },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) {
-      throw await HttpError.fromResponse(response, {
-        method: "POST",
-        requestHeaders: {
-          "Content-Type": "application/json",
-          "x-access-token": this.accessToken,
-          "x-entity-team-id": this.teamId
-        },
-        secretValues: [this.accessToken],
-        url
-      });
-    }
-  }
-};
-function createInternalIntegrationAdapter(options) {
-  if (options.backend !== "bifrost") {
-    const masker = options.secretMasker ?? createSecretMasker([options.accessToken]);
-    throw new Error(
-      masker(`Unsupported integration backend: ${String(options.backend || "")}`)
-    );
-  }
-  return new BifrostInternalIntegrationAdapter(options);
-}
 
 // src/lib/retry.ts
 function sleep(delayMs) {
@@ -21954,6 +21843,50 @@ async function retry(operation, retriesOrOptions = {}, delayMs) {
 }
 
 // src/lib/postman/postman-assets-client.ts
+function normalizeGitHubRepoUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const sshMatch = raw.match(/^git@github\.com:(.+)$/i);
+  if (sshMatch?.[1]) {
+    return normalizeGitHubRepoUrl(`https://github.com/${sshMatch[1]}`);
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/github\.com$/i.test(parsed.hostname)) return raw.toLowerCase();
+    const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/").filter(Boolean);
+    if (parts.length < 2) return raw.toLowerCase();
+    return `https://github.com/${parts[0].toLowerCase()}/${parts[1].toLowerCase()}`;
+  } catch {
+    return raw.replace(/\.git$/i, "").replace(/\/+$/g, "").toLowerCase();
+  }
+}
+function extractGitHubRepoUrl(value) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    const normalized = normalizeGitHubRepoUrl(value);
+    return normalized.includes("github.com/") ? normalized : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const repoUrl = extractGitHubRepoUrl(item);
+      if (repoUrl) return repoUrl;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    const record = value;
+    const preferredKeys = ["repo", "repository", "repoUrl", "repo_url", "remoteUrl", "remote_url", "origin"];
+    for (const key of preferredKeys) {
+      const repoUrl = extractGitHubRepoUrl(record[key]);
+      if (repoUrl) return repoUrl;
+    }
+    for (const nested of Object.values(record)) {
+      const repoUrl = extractGitHubRepoUrl(nested);
+      if (repoUrl) return repoUrl;
+    }
+  }
+  return null;
+}
 var PostmanAssetsClient = class {
   apiKey;
   baseUrl;
@@ -22038,6 +21971,47 @@ var PostmanAssetsClient = class {
       };
     }, 3, 2e3);
   }
+  async listWorkspaces() {
+    const data = await this.request("/workspaces");
+    const workspaces = data?.workspaces ?? [];
+    return Array.isArray(workspaces) ? workspaces.filter((w) => w?.id && w?.name).map((w) => ({
+      id: String(w.id),
+      name: String(w.name),
+      type: String(w.type ?? "team")
+    })) : [];
+  }
+  async findWorkspacesByName(name) {
+    const workspaces = await this.listWorkspaces();
+    return workspaces.filter((w) => w.name === name).sort((a, b) => a.id.localeCompare(b.id)).map((w) => ({ id: w.id, name: w.name }));
+  }
+  async getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken) {
+    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "x-access-token": accessToken,
+        "x-entity-team-id": teamId,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        service: "workspaces",
+        method: "GET",
+        path: `/workspaces/${workspaceId}/filesystem`
+      })
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const body2 = await response.text();
+      throw new Error(`Bifrost workspace lookup failed: ${response.status} - ${body2}`);
+    }
+    const body = await response.text();
+    if (!body.trim()) return null;
+    try {
+      return extractGitHubRepoUrl(JSON.parse(body));
+    } catch {
+      return extractGitHubRepoUrl(body);
+    }
+  }
   async inviteRequesterToWorkspace(workspaceId, email) {
     const users = await this.request("/users");
     const user = users?.data?.find((entry) => entry.email === email);
@@ -22112,7 +22086,7 @@ var PostmanAssetsClient = class {
         requestNameSource: "Fallback"
       }
     };
-    const extractUid = (data) => data?.details?.resources?.[0]?.id || data?.collection?.id || data?.collection?.uid || data?.resource?.uid || data?.resource?.id || "";
+    const extractUid = (data) => data?.details?.resources?.[0]?.id || data?.collection?.id || data?.collection?.uid || data?.resource?.uid || data?.resource?.id || void 0;
     return retry(
       async () => {
         const maxLockedRetries = 5;
@@ -22201,6 +22175,18 @@ var PostmanAssetsClient = class {
       "",
       "pm.test('Status code is successful (2xx)', function () {",
       "    pm.response.to.be.success;",
+      "});",
+      "",
+      "pm.test('Response time is acceptable', function () {",
+      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
+      "    pm.expect(pm.response.responseTime).to.be.below(threshold);",
+      "});",
+      "",
+      "pm.test('Response body is not empty', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        var body = pm.response.text();",
+      "        pm.expect(body.length).to.be.above(0);",
+      "    }",
       "});"
     ];
     const contractTests = [
@@ -22208,7 +22194,67 @@ var PostmanAssetsClient = class {
       "",
       "pm.test('Status code is successful (2xx)', function () {",
       "    pm.response.to.be.success;",
-      "});"
+      "});",
+      "",
+      "pm.test('Response time is acceptable', function () {",
+      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
+      "    pm.expect(pm.response.responseTime).to.be.below(threshold);",
+      "});",
+      "",
+      "pm.test('Response body is not empty', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        var body = pm.response.text();",
+      "        pm.expect(body.length).to.be.above(0);",
+      "    }",
+      "});",
+      "",
+      "pm.test('Content-Type is application/json', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        pm.response.to.have.header('Content-Type');",
+      "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+      "    }",
+      "});",
+      "",
+      "pm.test('Response is valid JSON', function () {",
+      "    if (pm.response.code !== 204) {",
+      "        pm.response.to.be.json;",
+      "    }",
+      "});",
+      "",
+      "// Validate required fields from response schema",
+      "pm.test('Required fields are present', function () {",
+      "    if (pm.response.code === 204) return;",
+      "    var jsonData = pm.response.json();",
+      "    pm.expect(jsonData).to.be.an('object');",
+      "    var keys = Object.keys(jsonData);",
+      "    if (keys.length === 1 && Array.isArray(jsonData[keys[0]])) {",
+      "        pm.expect(jsonData[keys[0]]).to.be.an('array');",
+      "    }",
+      "});",
+      "",
+      "// Validate response field types (non-null required fields)",
+      "pm.test('Field types are correct', function () {",
+      "    if (pm.response.code === 204) return;",
+      "    var jsonData = pm.response.json();",
+      "    Object.keys(jsonData).forEach(function(key) {",
+      "        pm.expect(jsonData[key]).to.not.be.undefined;",
+      "    });",
+      "});",
+      "",
+      "(function() {",
+      "    var status = pm.response.code;",
+      "    if (status === 204) return; ",
+      "    try {",
+      "        var body = pm.response.json();",
+      "        pm.test('Response body matches expected structure', function () {",
+      "            pm.expect(typeof body).to.equal('object');",
+      "            if (status >= 400) {",
+      "                pm.expect(body).to.have.property('error');",
+      "                pm.expect(body).to.have.property('message');",
+      "            }",
+      "        });",
+      "    } catch (e) {}",
+      "})();"
     ];
     const scriptsToInject = type === "smoke" ? smokeTests : contractTests;
     const request0Item = {
@@ -22244,7 +22290,11 @@ var PostmanAssetsClient = class {
           script: {
             exec: [
               'if (pm.environment.get("CI") === "true") { return; }',
-              "const body = pm.response.json();"
+              "const body = pm.response.json();",
+              "if (body.SecretString) {",
+              "  const secrets = JSON.parse(body.SecretString);",
+              "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+              "}"
             ]
           }
         }
@@ -22366,6 +22416,262 @@ var PostmanAssetsClient = class {
     return response?.environments || [];
   }
 };
+
+// src/lib/postman/internal-integration-adapter.ts
+var BifrostInternalIntegrationAdapter = class {
+  accessToken;
+  fetchImpl;
+  secretMasker;
+  teamId;
+  workerBaseUrl;
+  constructor(options) {
+    this.accessToken = String(options.accessToken || "").trim();
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
+    this.teamId = String(options.teamId || "").trim();
+    this.workerBaseUrl = String(
+      options.workerBaseUrl || "https://catalog-admin.postman-account2009.workers.dev"
+    ).replace(/\/+$/, "");
+  }
+  async assignWorkspaceToGovernanceGroup(workspaceId, domain, mappingJson) {
+    let mapping;
+    try {
+      mapping = JSON.parse(mappingJson || "{}");
+    } catch {
+      return;
+    }
+    const groupName = String(mapping[domain] || "").trim();
+    if (!groupName) {
+      return;
+    }
+    const listResponse = await this.fetchImpl(
+      "https://gateway.postman.com/configure/workspace-groups",
+      {
+        headers: {
+          "x-access-token": this.accessToken
+        }
+      }
+    );
+    if (!listResponse.ok) {
+      throw await HttpError.fromResponse(listResponse, {
+        method: "GET",
+        requestHeaders: {
+          "x-access-token": this.accessToken
+        },
+        secretValues: [this.accessToken],
+        url: "https://gateway.postman.com/configure/workspace-groups"
+      });
+    }
+    const groups = await listResponse.json();
+    const group = groups.data?.find((entry) => entry.name === groupName);
+    if (!group?.id) {
+      return;
+    }
+    const patchResponse = await this.fetchImpl(
+      `https://gateway.postman.com/configure/workspace-groups/${group.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-access-token": this.accessToken
+        },
+        body: JSON.stringify({
+          workspaces: [workspaceId]
+        })
+      }
+    );
+    if (!patchResponse.ok) {
+      throw await HttpError.fromResponse(patchResponse, {
+        method: "PATCH",
+        requestHeaders: {
+          "Content-Type": "application/json",
+          "x-access-token": this.accessToken
+        },
+        secretValues: [this.accessToken],
+        url: `https://gateway.postman.com/configure/workspace-groups/${group.id}`
+      });
+    }
+  }
+  async associateSystemEnvironments(workspaceId, associations) {
+    if (associations.length === 0) {
+      return;
+    }
+    const response = await this.fetchImpl(
+      `${this.workerBaseUrl}/api/internal/system-envs/associate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          workspace_id: workspaceId,
+          associations: associations.map((entry) => ({
+            env_uid: entry.envUid,
+            system_env_id: entry.systemEnvId
+          }))
+        })
+      }
+    );
+    if (!response.ok) {
+      throw await HttpError.fromResponse(response, {
+        method: "POST",
+        requestHeaders: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json"
+        },
+        secretValues: [this.accessToken],
+        url: `${this.workerBaseUrl}/api/internal/system-envs/associate`
+      });
+    }
+  }
+  async connectWorkspaceToRepository(workspaceId, repoUrl) {
+    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const headers = {
+      "Content-Type": "application/json",
+      "x-access-token": this.accessToken,
+      "x-entity-team-id": this.teamId
+    };
+    const payload = {
+      service: "workspaces",
+      method: "POST",
+      path: `/workspaces/${workspaceId}/filesystem`,
+      body: {
+        path: "/",
+        repo: repoUrl,
+        versionControl: true
+      }
+    };
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) return;
+    if (response.status === 400) {
+      const body = await response.text();
+      if (body.includes("invalidParamError") && body.includes("already exists")) {
+        const linkedUrl = await this.getWorkspaceGitRepoUrl(workspaceId);
+        if (normalizeGitHubRepoUrl(linkedUrl) === normalizeGitHubRepoUrl(repoUrl)) {
+          return;
+        }
+        throw new Error(
+          `Bifrost link already exists for workspace ${workspaceId}, but linked to a different repo`
+        );
+      }
+    }
+    throw await HttpError.fromResponse(response, {
+      method: "POST",
+      requestHeaders: headers,
+      secretValues: [this.accessToken],
+      url
+    });
+  }
+  async getWorkspaceGitRepoUrl(workspaceId) {
+    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-access-token": this.accessToken,
+        "x-entity-team-id": this.teamId
+      },
+      body: JSON.stringify({
+        service: "workspaces",
+        method: "GET",
+        path: `/workspaces/${workspaceId}/filesystem`
+      })
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) return null;
+    const body = await response.text();
+    if (!body.trim()) return null;
+    try {
+      const data = JSON.parse(body);
+      const repo = data?.repo || data?.repository || data?.repoUrl;
+      return typeof repo === "string" ? repo : null;
+    } catch {
+      return null;
+    }
+  }
+};
+function createInternalIntegrationAdapter(options) {
+  if (options.backend !== "bifrost") {
+    const masker = options.secretMasker ?? createSecretMasker([options.accessToken]);
+    throw new Error(
+      masker(`Unsupported integration backend: ${String(options.backend || "")}`)
+    );
+  }
+  return new BifrostInternalIntegrationAdapter(options);
+}
+
+// src/lib/postman/workspace-selection.ts
+function chooseCanonicalWorkspace(args) {
+  const repoWorkspaceId = String(args.repoWorkspaceId || "").trim();
+  const normalizedRepoUrl = normalizeGitHubRepoUrl(args.repoUrl);
+  const matchingWorkspaces = [...args.matchingWorkspaces].sort((a, b) => a.id.localeCompare(b.id));
+  const linkedMatches = matchingWorkspaces.filter(
+    (workspace) => normalizeGitHubRepoUrl(workspace.linkedRepoUrl) === normalizedRepoUrl
+  );
+  if (linkedMatches.length === 1) {
+    const linked = linkedMatches[0];
+    return {
+      type: "existing",
+      workspaceId: linked.id,
+      source: "linked_match",
+      warning: repoWorkspaceId && repoWorkspaceId !== linked.id ? `Replacing repo workspace ${repoWorkspaceId} with canonical GitHub-linked workspace ${linked.id}` : void 0
+    };
+  }
+  if (linkedMatches.length > 1) {
+    if (repoWorkspaceId && linkedMatches.some((workspace) => workspace.id === repoWorkspaceId)) {
+      return {
+        type: "existing",
+        workspaceId: repoWorkspaceId,
+        source: "linked_match",
+        warning: `Multiple GitHub-linked workspaces matched ${normalizedRepoUrl}; keeping existing linked repo workspace ${repoWorkspaceId} until manual cleanup.`
+      };
+    }
+    return {
+      type: "manual_review",
+      reason: `Multiple GitHub-linked workspaces matched ${normalizedRepoUrl}: ${linkedMatches.map((workspace) => workspace.id).join(", ")}`
+    };
+  }
+  if (repoWorkspaceId) {
+    return {
+      type: "existing",
+      workspaceId: repoWorkspaceId,
+      source: "repo_var"
+    };
+  }
+  if (matchingWorkspaces.length > 0) {
+    return {
+      type: "existing",
+      workspaceId: matchingWorkspaces[0].id,
+      source: "name_match"
+    };
+  }
+  return { type: "create" };
+}
+async function resolveCanonicalWorkspaceSelection(args) {
+  let matchingWorkspaces = [];
+  try {
+    matchingWorkspaces = await args.postman.findWorkspacesByName(args.workspaceName);
+  } catch (error) {
+    if (!args.repoWorkspaceId) throw error;
+    args.warn?.(`Workspace duplicate check failed; falling back to repo workspace ${args.repoWorkspaceId}: ${error}`);
+  }
+  if (matchingWorkspaces.length > 1) {
+    matchingWorkspaces = await Promise.all(matchingWorkspaces.map(async (workspace) => ({
+      ...workspace,
+      linkedRepoUrl: await args.postman.getWorkspaceGitRepoUrl(workspace.id, args.teamId, args.accessToken)
+    })));
+  }
+  return chooseCanonicalWorkspace({
+    repoWorkspaceId: args.repoWorkspaceId,
+    repoUrl: args.repoUrl,
+    matchingWorkspaces
+  });
+}
 
 // src/index.ts
 function normalizeInputValue(value) {
@@ -22622,6 +22928,34 @@ async function runBootstrap(inputs, dependencies) {
   if (!workspaceId && dependencies.github) {
     workspaceId = await dependencies.github.getRepositoryVariable("POSTMAN_WORKSPACE_ID").catch(() => void 0) || void 0;
   }
+  const teamId = process.env.POSTMAN_TEAM_ID || "";
+  const repoUrl = process.env.GITHUB_REPOSITORY ? `https://github.com/${process.env.GITHUB_REPOSITORY}` : "";
+  if (!workspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
+    const selection = await runGroup(
+      dependencies.core,
+      "Resolve Canonical Workspace",
+      async () => resolveCanonicalWorkspaceSelection({
+        postman: dependencies.postman,
+        workspaceName,
+        repoWorkspaceId: void 0,
+        repoUrl,
+        teamId,
+        accessToken: inputs.postmanAccessToken,
+        warn: (msg) => dependencies.core.warning(msg)
+      })
+    );
+    if (selection.type === "existing") {
+      workspaceId = selection.workspaceId;
+      if (selection.warning) {
+        dependencies.core.warning(selection.warning);
+      }
+      dependencies.core.info(`Using canonical workspace (${selection.source}): ${workspaceId}`);
+    } else if (selection.type === "manual_review") {
+      throw new Error(`Workspace selection requires manual review: ${selection.reason}`);
+    }
+  } else if (workspaceId) {
+    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+  }
   if (!workspaceId) {
     const workspace = await runGroup(
       dependencies.core,
@@ -22629,8 +22963,6 @@ async function runBootstrap(inputs, dependencies) {
       async () => dependencies.postman.createWorkspace(workspaceName, aboutText)
     );
     workspaceId = workspace.id;
-  } else {
-    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
   }
   outputs["workspace-id"] = workspaceId || "";
   outputs["workspace-url"] = `https://go.postman.co/workspace/${workspaceId}`;
