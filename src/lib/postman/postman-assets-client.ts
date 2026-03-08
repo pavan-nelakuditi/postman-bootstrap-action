@@ -381,6 +381,10 @@ export class PostmanAssetsClient {
     };
 
     const injectScripts = (itemNode: any) => {
+      if (itemNode.name === '00 - Resolve Secrets') {
+        return;
+      }
+
       if (itemNode.request) {
         itemNode.event = (itemNode.event || []).filter(
           (entry: any) => entry.listen !== 'test'
@@ -399,6 +403,10 @@ export class PostmanAssetsClient {
     };
 
     if (Array.isArray(collection.item)) {
+      // Remove any existing secrets resolver to prevent duplicates on reruns
+      collection.item = collection.item.filter(
+        (entry: any) => entry.name !== '00 - Resolve Secrets'
+      );
       collection.item.forEach(injectScripts);
     } else {
       collection.item = [];

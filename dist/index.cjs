@@ -22241,6 +22241,9 @@ var PostmanAssetsClient = class {
       ]
     };
     const injectScripts = (itemNode) => {
+      if (itemNode.name === "00 - Resolve Secrets") {
+        return;
+      }
       if (itemNode.request) {
         itemNode.event = (itemNode.event || []).filter(
           (entry) => entry.listen !== "test"
@@ -22258,6 +22261,9 @@ var PostmanAssetsClient = class {
       }
     };
     if (Array.isArray(collection.item)) {
+      collection.item = collection.item.filter(
+        (entry) => entry.name !== "00 - Resolve Secrets"
+      );
       collection.item.forEach(injectScripts);
     } else {
       collection.item = [];
