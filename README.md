@@ -89,6 +89,22 @@ If you want the action to discover prior bootstrap state automatically on reruns
 | `github-auth-mode` | `github_token_first` | Auth mode for repository variable APIs. |
 | `integration-backend` | `bifrost` | Current public beta backend. |
 
+### Obtaining `postman-api-key`
+
+The `postman-api-key` is a Postman API key (PMAK) used for all standard Postman API operations — creating workspaces, uploading specs, generating collections, exporting artifacts, and managing environments.
+
+**To generate one:**
+
+1. Open the Postman desktop app or web UI.
+2. Go to **Settings** (gear icon) → **Account Settings** → **API Keys**.
+3. Click **Generate API Key**, give it a label, and copy the key (starts with `PMAK-`).
+4. Set it as a GitHub secret:
+   ```bash
+   gh secret set POSTMAN_API_KEY --repo <owner>/<repo>
+   ```
+
+> **Note:** The PMAK is a long-lived key tied to your Postman account. It does not require periodic renewal like the `postman-access-token`.
+
 ### Obtaining `postman-access-token` (Beta)
 
 > **⚠️ Beta limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
