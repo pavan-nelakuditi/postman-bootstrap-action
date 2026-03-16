@@ -90,16 +90,16 @@ export class PostmanAssetsClient {
     return this.baseUrl;
   }
 
-  async getMe(): Promise<any> {
-    const res = await this.request('/me', { method: 'GET' });
-    return JSON.parse(res.body);
+  async getMe(): Promise<Record<string, unknown> | null> {
+    return this.request('/me', { method: 'GET' }) as Promise<Record<string, unknown> | null>;
   }
 
   async getAutoDerivedTeamId(): Promise<string | undefined> {
     try {
       const data = await this.getMe();
-      if (data?.user?.teamId) {
-        return String(data.user.teamId);
+      const user = data?.user;
+      if (user && typeof user === 'object' && 'teamId' in user && user.teamId) {
+        return String(user.teamId);
       }
     } catch (e) {
       // ignore
@@ -150,7 +150,7 @@ export class PostmanAssetsClient {
           type: 'team'
         }
       };
-      let created;
+      let created: FetchResult;
       try {
         created = await this.request('/workspaces', {
           method: 'POST',

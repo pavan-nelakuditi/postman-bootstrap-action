@@ -21905,14 +21905,14 @@ var PostmanAssetsClient = class {
     return this.baseUrl;
   }
   async getMe() {
-    const res = await this.request("/me", { method: "GET" });
-    return JSON.parse(res.body);
+    return this.request("/me", { method: "GET" });
   }
   async getAutoDerivedTeamId() {
     try {
       const data = await this.getMe();
-      if (data?.user?.teamId) {
-        return String(data.user.teamId);
+      const user = data?.user;
+      if (user && typeof user === "object" && "teamId" in user && user.teamId) {
+        return String(user.teamId);
       }
     } catch (e) {
     }
@@ -22658,9 +22658,13 @@ function chooseCanonicalWorkspace(args) {
     };
   }
   if (matchingWorkspaces.length > 0) {
+    const candidate = matchingWorkspaces[0];
+    if (candidate.linkedRepoUrl && normalizeGitHubRepoUrl(candidate.linkedRepoUrl) !== normalizedRepoUrl) {
+      return { type: "create" };
+    }
     return {
       type: "existing",
-      workspaceId: matchingWorkspaces[0].id,
+      workspaceId: candidate.id,
       source: "name_match"
     };
   }
@@ -22674,7 +22678,7 @@ async function resolveCanonicalWorkspaceSelection(args) {
     if (!args.repoWorkspaceId) throw error;
     args.warn?.(`Workspace duplicate check failed; falling back to repo workspace ${args.repoWorkspaceId}: ${error}`);
   }
-  if (matchingWorkspaces.length > 1) {
+  if (matchingWorkspaces.length > 0) {
     matchingWorkspaces = await Promise.all(matchingWorkspaces.map(async (workspace) => ({
       ...workspace,
       linkedRepoUrl: await args.postman.getWorkspaceGitRepoUrl(workspace.id, args.teamId, args.accessToken)
@@ -22739,6 +22743,10 @@ function resolveInputs(env = process.env) {
       `Unsupported integration-backend "${integrationBackend}". Supported values: ${allowedBackends.join(", ")}`
     );
   }
+  const specUrl = getInput("spec-url", env) ?? "";
+  if (specUrl && !specUrl.startsWith("http://") && !specUrl.startsWith("https://")) {
+    throw new Error(`spec-url must be a valid HTTP/HTTPS URL, got: ${specUrl}`);
+  }
   return {
     projectName: getInput("project-name", env) ?? "",
     workspaceId: getInput("workspace-id", env),
@@ -22750,7 +22758,7 @@ function resolveInputs(env = process.env) {
     domainCode: getInput("domain-code", env),
     requesterEmail: getInput("requester-email", env),
     workspaceAdminUserIds: getInput("workspace-admin-user-ids", env),
-    specUrl: getInput("spec-url", env) ?? "",
+    specUrl,
     environmentsJson: getInput("environments-json", env) ?? betaActionContract.inputs["environments-json"].default ?? '["prod"]',
     systemEnvMapJson: getInput("system-env-map-json", env) ?? betaActionContract.inputs["system-env-map-json"].default ?? "{}",
     governanceMappingJson: getInput("governance-mapping-json", env) ?? betaActionContract.inputs["governance-mapping-json"].default ?? "{}",
@@ -22942,7 +22950,10 @@ async function runBootstrap(inputs, dependencies) {
   if (!workspaceId && dependencies.github) {
     workspaceId = await dependencies.github.getRepositoryVariable("POSTMAN_WORKSPACE_ID").catch(() => void 0) || void 0;
   }
-  const teamId = process.env.POSTMAN_TEAM_ID || "";
+  let teamId = process.env.POSTMAN_TEAM_ID || "";
+  if (!teamId) {
+    teamId = await dependencies.postman.getAutoDerivedTeamId() || "";
+  }
   const repoUrl = process.env.GITHUB_REPOSITORY ? `https://github.com/${process.env.GITHUB_REPOSITORY}` : "";
   if (!workspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
     const selection = await runGroup(

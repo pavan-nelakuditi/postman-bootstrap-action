@@ -70,9 +70,13 @@ export function chooseCanonicalWorkspace(args: ChooseCanonicalWorkspaceArgs): Ca
   }
 
   if (matchingWorkspaces.length > 0) {
+    const candidate = matchingWorkspaces[0];
+    if (candidate.linkedRepoUrl && normalizeGitHubRepoUrl(candidate.linkedRepoUrl) !== normalizedRepoUrl) {
+      return { type: 'create' };
+    }
     return {
       type: 'existing',
-      workspaceId: matchingWorkspaces[0].id,
+      workspaceId: candidate.id,
       source: 'name_match',
     };
   }
@@ -98,7 +102,7 @@ export async function resolveCanonicalWorkspaceSelection(args: {
     args.warn?.(`Workspace duplicate check failed; falling back to repo workspace ${args.repoWorkspaceId}: ${error}`);
   }
 
-  if (matchingWorkspaces.length > 1) {
+  if (matchingWorkspaces.length > 0) {
     matchingWorkspaces = await Promise.all(matchingWorkspaces.map(async (workspace) => ({
       ...workspace,
       linkedRepoUrl: await args.postman.getWorkspaceGitRepoUrl(workspace.id, args.teamId, args.accessToken),

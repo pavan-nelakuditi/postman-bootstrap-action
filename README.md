@@ -113,7 +113,7 @@ The `postman-api-key` is a Postman API key (PMAK) used for all standard Postman 
 
 > **⚠️ Open-alpha limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
 
-The `postman-access-token` is a Postman session token (`x-access-token`) required for internal API operations that the standard PMAK API key cannot perform — specifically workspace ↔ repo git sync (Bifrost), governance group assignment, and system environment associations. Without it, those steps are silently skipped during provisioning.
+The `postman-access-token` is a Postman session token (`x-access-token`) required for internal API operations that the standard PMAK API key cannot perform — specifically governance group assignment in this action. Without it, those steps are silently skipped during provisioning.
 
 **To obtain and configure the token:**
 
@@ -138,7 +138,7 @@ The `postman-access-token` is a Postman session token (`x-access-token`) require
    ```
    Paste the token value when prompted.
 
-> **Important:** This token is session-scoped and will expire. When it does, operations that depend on it (workspace linking, governance, system environment associations) will silently degrade. You will need to repeat the login and secret update process. There is no automated refresh mechanism.
+> **Important:** This token is session-scoped and will expire. When it does, operations that depend on it (governance) will silently degrade. You will need to repeat the login and secret update process. There is no automated refresh mechanism.
 
 > **Note:** `postman login --with-api-key` stores a PMAK — **not** the session token these APIs require. You must use the interactive browser login.
 

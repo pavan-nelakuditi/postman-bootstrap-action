@@ -108,6 +108,7 @@ export interface BootstrapExecutionDependencies {
     | 'createWorkspace'
     | 'findWorkspacesByName'
     | 'generateCollection'
+    | 'getAutoDerivedTeamId'
     | 'getWorkspaceGitRepoUrl'
     | 'injectTests'
     | 'inviteRequesterToWorkspace'
@@ -198,6 +199,11 @@ export function resolveInputs(
     );
   }
 
+  const specUrl = getInput('spec-url', env) ?? '';
+  if (specUrl && !specUrl.startsWith('http://') && !specUrl.startsWith('https://')) {
+    throw new Error(`spec-url must be a valid HTTP/HTTPS URL, got: ${specUrl}`);
+  }
+
   return {
     projectName: getInput('project-name', env) ?? '',
     workspaceId: getInput('workspace-id', env),
@@ -209,7 +215,7 @@ export function resolveInputs(
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
     workspaceAdminUserIds: getInput('workspace-admin-user-ids', env),
-    specUrl: getInput('spec-url', env) ?? '',
+    specUrl,
     environmentsJson:
       getInput('environments-json', env) ??
       betaActionContract.inputs['environments-json'].default ??
@@ -476,7 +482,10 @@ export async function runBootstrap(
     workspaceId = await dependencies.github.getRepositoryVariable('POSTMAN_WORKSPACE_ID').catch(() => undefined) || undefined;
   }
 
-  const teamId = process.env.POSTMAN_TEAM_ID || '';
+  let teamId = process.env.POSTMAN_TEAM_ID || '';
+  if (!teamId) {
+    teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
+  }
   const repoUrl = process.env.GITHUB_REPOSITORY
     ? `https://github.com/${process.env.GITHUB_REPOSITORY}`
     : '';

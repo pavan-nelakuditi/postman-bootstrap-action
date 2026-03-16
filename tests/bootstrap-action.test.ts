@@ -131,6 +131,7 @@ describe('bootstrap action', () => {
           if (prefix === '[Smoke]') return 'col-smoke';
           return 'col-contract';
         }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -229,6 +230,7 @@ describe('bootstrap action', () => {
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -261,6 +263,7 @@ describe('bootstrap action', () => {
       createWorkspace: vi.fn(),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -327,6 +330,7 @@ describe('bootstrap action', () => {
       createWorkspace: vi.fn(),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -370,6 +374,117 @@ describe('bootstrap action', () => {
       'smoke-collection-id': 'col-smoke-from-vars',
       'contract-collection-id': 'col-contract-from-vars'
     });
+  });
+
+  it('skips governance assignment when postman-access-token is absent', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const result = await runBootstrap(
+      createInputs({ postmanAccessToken: undefined }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    expect(postman.createWorkspace).toHaveBeenCalled();
+  });
+
+  it('skips repo variable persistence when github dependency is absent', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const result = await runBootstrap(
+      createInputs({ githubToken: undefined }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    expect(result['spec-id']).toBe('spec-123');
+  });
+
+  it('emits warnings for lint violations but does not fail', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub(
+      JSON.stringify({
+        violations: [
+          { issue: 'Missing description', path: '$.paths./payments.get', severity: 'WARNING' }
+        ]
+      })
+    );
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const result = await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman,
+      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response('openapi: 3.1.0', { status: 200 })
+      )
+    });
+
+    expect(result['workspace-id']).toBe('ws-123');
+    expect(warnings.some((w) => w.includes('Missing description'))).toBe(true);
+    const lintSummary = JSON.parse(result['lint-summary-json']);
+    expect(lintSummary.warnings).toBe(1);
+    expect(lintSummary.errors).toBe(0);
   });
 });
 
