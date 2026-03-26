@@ -263,6 +263,22 @@ The action continues to write the current/default pointers:
 
 For versioned runs, it also maintains `POSTMAN_RELEASES_JSON` so future runs can look up release-scoped specs and collections by `release-label`.
 
+### Contract smoke monitoring
+
+This repo includes `.github/workflows/contract-smoke.yml`, a scheduled live contract check for the upstream Postman APIs used by bootstrap.
+
+Configure these repository secrets before enabling the workflow:
+
+- `SMOKE_ORG_API_KEY`
+- `SMOKE_ORG_ACCESS_TOKEN`
+- `SMOKE_NON_ORG_API_KEY`
+
+Configure this repository variable for the org-mode workspace creation check:
+
+- `SMOKE_WORKSPACE_TEAM_ID=132319`
+
+`132319` is the currently derived CSE sub-team ID under org `13347347`. The smoke job uses that value to verify `POST /workspaces` still accepts the explicit `teamId` payload required for org-mode tenants.
+
 ## Versioning Examples
 
 Refresh the current collections in place while keeping one canonical spec:
