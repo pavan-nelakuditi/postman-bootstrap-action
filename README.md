@@ -14,7 +14,7 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 - generate missing baseline, smoke, and contract collections or reuse existing ones
 - optionally refresh current collections from the latest spec or create release-scoped spec and collection assets
 - inject generated tests and apply collection tags
-- persist bootstrap repo variables needed by downstream sync work, including release-aware metadata for versioned runs
+- reuse committed `.postman/resources.yaml` state from the checked-out ref when present
 
 The public open-alpha contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
@@ -23,13 +23,12 @@ The public open-alpha contract uses kebab-case inputs and outputs and defaults `
 Workspace-to-repository linking via Bifrost supports both **GitHub** and **GitLab** (cloud and self-hosted) repository URLs. The `repo-url` value (or the auto-derived URL from CI environment variables) is stored as-is by Bifrost without provider-specific validation. URL normalization handles HTTPS, SSH (`git@`), and `.git` suffix variants for both providers.
 The public open-alpha contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
-For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When GitHub repo variable persistence is enabled, the action also falls back to `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, `POSTMAN_BASELINE_COLLECTION_UID`, `POSTMAN_SMOKE_COLLECTION_UID`, and `POSTMAN_CONTRACT_COLLECTION_UID` on reruns.
+For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When `.postman/resources.yaml` is present in the checked-out ref, the action also reuses its workspace/spec/collection mappings automatically.
 
 Lifecycle behavior remains backward-compatible except for collection default mode:
 
 - `collection-sync-mode: refresh`
 - `spec-sync-mode: update`
-- `set-as-current: true`
 
 If you do not set those inputs, the action refreshes collection pointers from the resolved spec and keeps one canonical spec update path.
 
@@ -101,13 +100,9 @@ jobs:
           requester-email: owner@example.com
           workspace-admin-user-ids: 101,102
           spec-url: https://example.com/openapi.yaml
-          environments-json: '["prod","stage"]'
-          system-env-map-json: '{"prod":"uuid-prod","stage":"uuid-stage"}'
           governance-mapping-json: '{"core-banking":"Core Banking"}'
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
           postman-access-token: ${{ secrets.POSTMAN_ACCESS_TOKEN }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          gh-fallback-token: ${{ secrets.GH_FALLBACK_TOKEN }}
 
   bootstrap-existing:
     runs-on: ubuntu-latest
@@ -125,7 +120,7 @@ jobs:
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
 
-If you want the action to discover prior bootstrap state automatically on reruns, provide a `github-token` so it can read the stored repository variables before creating new Postman assets.
+If you want the action to discover prior bootstrap state automatically on reruns, commit `.postman/resources.yaml` and run the action on the ref whose state you want to reuse.
 
 ## CLI Usage (Non-GitHub CI)
 
@@ -210,7 +205,6 @@ steps:
 | `collection-sync-mode` | `refresh` | Collection lifecycle policy. `reuse` keeps existing collections, `refresh` regenerates the current collection set from the latest spec, and `version` creates or reuses release-scoped collections. |
 | `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
 | `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
-| `set-as-current` | `true` | Whether the resolved assets should update the current/default repo variable pointers. `refresh` always updates the current pointers. |
 | `project-name` | | Service name used in workspace and asset naming. |
 | `domain` | | Business domain used for governance assignment. |
 | `domain-code` | | Short prefix used when constructing the workspace name. |
@@ -218,14 +212,9 @@ steps:
 | `workspace-admin-user-ids` | | Comma-separated Postman user IDs to grant admin access. |
 | `workspace-team-id` | | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. |
 | `spec-url` | | Required registry-backed OpenAPI document URL. |
-| `environments-json` | `["prod"]` | Environment slugs preserved in outputs and repo variables. |
-| `system-env-map-json` | `{}` | Map of environment slug to system environment ID. |
 | `governance-mapping-json` | `{}` | Map of domain to governance group name. |
 | `postman-api-key` | | Required for all Postman asset operations. |
 | `postman-access-token` | | Required for governance assignment and canonical workspace validation during reruns. |
-| `github-token` | | Enables repository variable persistence and rerun fallback discovery. |
-| `gh-fallback-token` | | Optional fallback token for repository variable APIs. |
-| `github-auth-mode` | `github_token_first` | Auth mode for repository variable APIs. |
 | `integration-backend` | `bifrost` | Current public open-alpha backend. |
 
 ## Lifecycle Modes
@@ -234,12 +223,12 @@ steps:
 
 - `reuse`: existing collection IDs are reused when available.
 - `refresh`: baseline, smoke, and contract collections are regenerated from the resolved spec and become the current/default collection pointers.
-- `version`: a release-scoped collection set is created or reused. By default it becomes current, but you can keep old current pointers by setting `set-as-current: false`.
+- `version`: a release-scoped collection set is created or reused from the checked-out ref's state when available.
 
 ### Spec sync
 
 - `update`: canonical behavior. The current spec in Spec Hub is updated from `spec-url`.
-- `version`: the action looks for a release-specific spec in `POSTMAN_RELEASES_JSON` using the resolved `release-label`. If none exists, it creates a new release-scoped spec instead of falling back to `POSTMAN_SPEC_UID`.
+- `version`: the action reuses the checked-out ref's `.postman/resources.yaml` spec mapping when present. If no mapping exists on the current ref, it creates a new release-scoped spec.
 
 ### Release label derivation
 
@@ -251,17 +240,12 @@ When versioned sync is requested and `release-label` is omitted, the action deri
 
 If versioned sync is requested and no usable label can be derived, the run fails.
 
-### Repo variable persistence
+### Ref-native state
 
-The action continues to write the current/default pointers:
+Current Postman asset state lives in `.postman/resources.yaml`.
 
-- `POSTMAN_WORKSPACE_ID`
-- `POSTMAN_SPEC_UID`
-- `POSTMAN_BASELINE_COLLECTION_UID`
-- `POSTMAN_SMOKE_COLLECTION_UID`
-- `POSTMAN_CONTRACT_COLLECTION_UID`
-
-For versioned runs, it also maintains `POSTMAN_RELEASES_JSON` so future runs can look up release-scoped specs and collections by `release-label`.
+- `update` and `reuse` modes resolve current-state mappings from the checked-out ref.
+- `version` mode reuses only the checked-out ref's mappings; release history lives in git history and tags, not in a separate manifest file or repository variables.
 
 ### Contract smoke monitoring
 
@@ -293,7 +277,7 @@ Refresh the current collections in place while keeping one canonical spec:
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
 
-Create a side-by-side versioned spec and collection set without moving current pointers:
+Create a versioned spec and collection set on the checked-out ref:
 
 ```yaml
 - uses: postman-cs/postman-bootstrap-action@v0
@@ -303,7 +287,6 @@ Create a side-by-side versioned spec and collection set without moving current p
     collection-sync-mode: version
     spec-sync-mode: version
     release-label: v1.1.1
-    set-as-current: false
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
 

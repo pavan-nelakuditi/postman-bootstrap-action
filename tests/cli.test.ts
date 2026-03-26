@@ -20,8 +20,6 @@ describe('parseCliArgs', () => {
         'version',
         '--release-label',
         'v1.2.3',
-        '--set-as-current',
-        'false',
         '--team-id',
         '12345',
         '--repo-url',
@@ -41,7 +39,6 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_COLLECTION_SYNC_MODE).toBe('version');
     expect(config.inputEnv.INPUT_SPEC_SYNC_MODE).toBe('version');
     expect(config.inputEnv.INPUT_RELEASE_LABEL).toBe('v1.2.3');
-    expect(config.inputEnv.INPUT_SET_AS_CURRENT).toBe('false');
     expect(config.inputEnv.INPUT_TEAM_ID).toBe('12345');
     expect(config.inputEnv.INPUT_REPO_URL).toBe('https://github.com/postman-cs/postman-bootstrap-action');
     expect(config.resultJsonPath).toBe('tmp/result.json');
@@ -60,9 +57,8 @@ describe('toDotenv', () => {
       'smoke-collection-id': 'col-smoke',
       'contract-collection-id': 'col-contract',
       'collections-json': '{"baseline":"col-baseline"}',
-      'lint-summary-json': '{"errors":0}',
-      'releases-json': ''
-    });
+      'lint-summary-json': '{"errors":0}'
+    } as any);
 
     expect(dotenv).toContain('POSTMAN_BOOTSTRAP_WORKSPACE_ID="ws-123"');
     expect(dotenv).toContain('POSTMAN_BOOTSTRAP_SPEC_ID="spec-123"');
@@ -116,9 +112,8 @@ describe('runCli', () => {
             'smoke-collection-id': 'col-smoke',
             'contract-collection-id': 'col-contract',
             'collections-json': '{"baseline":"col-baseline","smoke":"col-smoke","contract":"col-contract"}',
-            'lint-summary-json': '{"errors":0,"total":0,"violations":[],"warnings":0}',
-            'releases-json': ''
-          };
+            'lint-summary-json': '{"errors":0,"total":0,"violations":[],"warnings":0}'
+          } as any;
         },
         writeStdout: (chunk) => {
           stdoutChunks.push(chunk);
@@ -138,21 +133,18 @@ describe('runCli', () => {
 });
 
 describe('createCliDependencies', () => {
-  it('creates github and internal integration dependencies under token conditions', () => {
+  it('creates internal integration dependencies under token conditions', () => {
     const inputs = resolveInputs({
       INPUT_PROJECT_NAME: 'core-payments',
       INPUT_SPEC_URL: 'https://example.test/openapi.yaml',
       INPUT_POSTMAN_API_KEY: 'pmak-test',
       INPUT_POSTMAN_ACCESS_TOKEN: 'pat-test',
-      INPUT_GITHUB_TOKEN: 'gh-token',
-      INPUT_GH_FALLBACK_TOKEN: 'gh-fallback',
       INPUT_REPO_URL: 'https://github.com/postman-cs/postman-bootstrap-action',
       INPUT_TEAM_ID: '12345'
     });
 
     const dependencies = createCliDependencies(inputs);
 
-    expect(dependencies.github).toBeDefined();
     expect(dependencies.internalIntegration).toBeDefined();
   });
 });

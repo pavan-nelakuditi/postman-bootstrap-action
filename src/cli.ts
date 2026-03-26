@@ -168,9 +168,7 @@ export function createCliDependencies(
 ): BootstrapExecutionDependencies {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken,
-    inputs.githubToken,
-    inputs.ghFallbackToken
+    inputs.postmanAccessToken
   ]);
   const cliExec = createCliExec(secretMasker);
 
@@ -196,18 +194,12 @@ export function parseCliArgs(argv: string[], env: NodeJS.ProcessEnv = process.en
     'collection-sync-mode',
     'spec-sync-mode',
     'release-label',
-    'set-as-current',
     'domain',
     'domain-code',
     'requester-email',
     'workspace-admin-user-ids',
-    'environments-json',
-    'system-env-map-json',
     'governance-mapping-json',
     'integration-backend',
-    'github-auth-mode',
-    'github-token',
-    'gh-fallback-token',
     'team-id',
     'workspace-team-id',
     'repo-url'
@@ -261,9 +253,6 @@ export async function runCli(
   const inputs = resolveInputs(config.inputEnv);
   const dependencies = createCliDependencies(inputs);
 
-  if (!dependencies.github) {
-    dependencies.core.info('GitHub repository variable persistence disabled for this run');
-  }
   if (inputs.domain && !dependencies.internalIntegration) {
     dependencies.core.warning(
       'Skipping governance assignment because postman-access-token is not configured'
