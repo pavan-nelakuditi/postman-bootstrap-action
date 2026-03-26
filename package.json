@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Public open-alpha Postman bootstrap GitHub Action.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -35,5 +35,9 @@
     "typescript": "^5.9.3",
     "vitest": "^4.0.18",
     "yaml": "^2.8.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/postman-cs/postman-bootstrap-action"
   }
 }
