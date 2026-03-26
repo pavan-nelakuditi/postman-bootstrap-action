@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   lintSpecViaCli,
@@ -103,6 +105,10 @@ function createIoStub(): IOLike {
 }
 
 describe('bootstrap action', () => {
+  afterEach(() => {
+    rmSync('.postman', { recursive: true, force: true });
+  });
+
   it('marks secrets as early as input resolution', () => {
     const { core, secrets } = createCoreStub({
       'project-name': 'core-payments',
@@ -908,6 +914,159 @@ describe('bootstrap action', () => {
 
     expect(result['workspace-id']).toBe('ws-123');
     expect(result['spec-id']).toBe('spec-123');
+  });
+
+  it('does not reuse current resources.yaml collections for a new versioned release without a matching release entry', async () => {
+    const { core, infos } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline-v2';
+          if (prefix === '[Smoke]') return 'col-smoke-v2';
+          return 'col-contract-v2';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn().mockResolvedValue('')
+    };
+
+    const resources = {
+      workspace: { id: 'ws-current' },
+      cloudResources: {
+        collections: {
+          '../postman/collections/[Baseline] core-payments': 'col-baseline-current',
+          '../postman/collections/[Smoke] core-payments': 'col-smoke-current',
+          '../postman/collections/[Contract] core-payments': 'col-contract-current'
+        }
+      }
+    };
+    const releases = {
+      current: 'v1.0.0',
+      releases: {
+        'v1.0.0': {
+          specId: 'spec-v1',
+          collections: {
+            baseline: 'col-baseline-v1',
+            smoke: 'col-smoke-v1',
+            contract: 'col-contract-v1'
+          }
+        }
+      }
+    };
+
+    mkdirSync('.postman', { recursive: true });
+    writeFileSync('.postman/resources.yaml', stringifyYaml(resources));
+    writeFileSync('.postman/releases.yaml', stringifyYaml(releases));
+
+    const result = await runBootstrap(
+      createInputs({
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'v2.0.0'
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(result['baseline-collection-id']).toBe('col-baseline-v2');
+    expect(result['smoke-collection-id']).toBe('col-smoke-v2');
+    expect(result['contract-collection-id']).toBe('col-contract-v2');
+    expect(infos).not.toContain('Resolved baseline-collection-id from .postman/resources.yaml');
+    expect(infos).not.toContain('Resolved smoke-collection-id from .postman/resources.yaml');
+    expect(infos).not.toContain('Resolved contract-collection-id from .postman/resources.yaml');
+  });
+
+  it('writes releases.yaml and emits releases-json for versioned runs without github persistence', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline-v2';
+          if (prefix === '[Smoke]') return 'col-smoke-v2';
+          return 'col-contract-v2';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        githubToken: undefined,
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'v2.0.0'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(result['releases-json']).not.toBe('');
+    const manifest = JSON.parse(result['releases-json']);
+    expect(manifest.current).toBe('v2.0.0');
+    expect(manifest.releases['v2.0.0']).toMatchObject({
+      specId: 'spec-v2',
+      collections: {
+        baseline: 'col-baseline-v2',
+        smoke: 'col-smoke-v2',
+        contract: 'col-contract-v2'
+      }
+    });
+
+    const written = parseYaml(readFileSync('.postman/releases.yaml', 'utf8')) as Record<string, any>;
+    expect(written.current).toBe('v2.0.0');
+    expect(written.releases['v2.0.0']).toMatchObject({
+      specId: 'spec-v2',
+      collections: {
+        baseline: 'col-baseline-v2',
+        smoke: 'col-smoke-v2',
+        contract: 'col-contract-v2'
+      }
+    });
   });
 
   it('emits warnings for lint violations but does not fail', async () => {

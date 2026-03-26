@@ -123,7 +123,8 @@ describe('open-alpha action contract', () => {
         total: 0,
         violations: [],
         warnings: 0
-      })
+      }),
+      'releases-json': ''
     });
   });
 });

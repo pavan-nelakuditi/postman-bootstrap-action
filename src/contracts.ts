@@ -166,6 +166,9 @@ export const openAlphaActionContract: BetaActionContract = {
     },
     'lint-summary-json': {
       description: 'JSON summary of lint errors and warnings.'
+    },
+    'releases-json': {
+      description: 'JSON-serialized releases manifest for repo-sync to persist as .postman/releases.yaml.'
     }
   },
   retainedBehavior: [

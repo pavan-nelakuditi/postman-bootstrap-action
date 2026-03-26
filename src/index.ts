@@ -1,7 +1,8 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
-import { parse, stringify } from 'yaml';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { parse, stringify, parse as loadYaml, stringify as dumpYaml } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
 import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
@@ -56,6 +57,7 @@ export interface PlannedOutputs {
   'contract-collection-id': string;
   'collections-json': string;
   'lint-summary-json': string;
+  'releases-json': string;
 }
 
 export interface LintViolation {
@@ -358,7 +360,8 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       total: 0,
       violations: [],
       warnings: 0
-    })
+    }),
+    'releases-json': ''
   };
 }
 
@@ -613,6 +616,24 @@ function createReleaseEntry(
   };
 }
 
+function applyReleaseEntry(
+  manifest: ReleasesManifest,
+  releaseLabel: string,
+  outputs: PlannedOutputs,
+  inputs: ResolvedInputs,
+  setAsCurrent: boolean
+): ReleasesManifest {
+  manifest.releases[releaseLabel] = createReleaseEntry(
+    releaseLabel,
+    outputs,
+    inputs
+  );
+  if (setAsCurrent) {
+    manifest.current = releaseLabel;
+  }
+  return manifest;
+}
+
 const SPEC_SUMMARY_MAX_LEN = 200;
 const SPEC_HTTP_METHODS = new Set([
   'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
@@ -831,14 +852,14 @@ async function persistBootstrapRepositoryVariables(
   }
 
   if (options.releaseLabel) {
-    const manifest = options.releasesManifest ?? { releases: {} };
-    manifest.releases[options.releaseLabel] = createReleaseEntry(
+    const manifest = applyReleaseEntry(
+      options.releasesManifest ?? { releases: {} },
       options.releaseLabel,
       outputs,
-      options.inputs
+      options.inputs,
+      options.setAsCurrent
     );
     if (options.setAsCurrent) {
-      manifest.current = options.releaseLabel;
       await writeVariable(
         github,
         projectName,
@@ -902,7 +923,21 @@ export async function runBootstrap(
   });
 
 
-  const explicitWorkspaceId = inputs.workspaceId;
+  let explicitWorkspaceId = inputs.workspaceId;
+
+  // .postman/ file fallback for workspace
+  if (!explicitWorkspaceId) {
+    try {
+      const raw = readFileSync('.postman/resources.yaml', 'utf8');
+      const config = loadYaml(raw) as Record<string, unknown> | null;
+      const wsId = (config?.workspace as Record<string, string> | undefined)?.id;
+      if (wsId) {
+        explicitWorkspaceId = wsId;
+        dependencies.core.info('Resolved workspace-id from .postman/resources.yaml');
+      }
+    } catch { /* file doesn't exist */ }
+  }
+
   let repoWorkspaceId: string | undefined;
   let workspaceId = explicitWorkspaceId;
   if (!workspaceId && dependencies.github) {
@@ -1088,18 +1123,44 @@ export async function runBootstrap(
 
   let releasesManifest: ReleasesManifest = { releases: {} };
   if (requiresReleaseLabel) {
-    const rawManifest = await readVariable(
-      dependencies.github,
-      inputs.projectName,
-      'RELEASES_JSON'
-    );
-    releasesManifest = parseReleasesManifest(rawManifest);
+    let fromFile = false;
+    try {
+      const raw = readFileSync('.postman/releases.yaml', 'utf8');
+      const parsed = loadYaml(raw);
+      if (parsed && typeof parsed === 'object') {
+        releasesManifest = parseReleasesManifest(JSON.stringify(parsed));
+        fromFile = true;
+        dependencies.core.info('Read releases manifest from .postman/releases.yaml');
+      }
+    } catch { /* file doesn't exist */ }
+    if (!fromFile) {
+      const rawManifest = await readVariable(
+        dependencies.github,
+        inputs.projectName,
+        'RELEASES_JSON'
+      );
+      releasesManifest = parseReleasesManifest(rawManifest);
+    }
   }
   const releaseEntry = releaseLabel ? releasesManifest.releases[releaseLabel] : undefined;
 
   let specId = inputs.specId;
   if (!specId && inputs.specSyncMode === 'version') {
     specId = releaseEntry?.specId;
+  }
+  if (!specId && inputs.specSyncMode === 'update') {
+    try {
+      const raw = readFileSync('.postman/resources.yaml', 'utf8');
+      const config = loadYaml(raw) as Record<string, unknown> | null;
+      const cloudSpecs = (config?.cloudResources as Record<string, unknown> | undefined)?.specs as Record<string, string> | undefined;
+      if (cloudSpecs) {
+        const firstValue = Object.values(cloudSpecs)[0];
+        if (firstValue) {
+          specId = firstValue;
+          dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
+        }
+      }
+    } catch { /* file doesn't exist */ }
   }
   if (!specId && dependencies.github && inputs.specSyncMode === 'update') {
     specId = await readVariable(dependencies.github, inputs.projectName, 'SPEC_UID');
@@ -1116,6 +1177,28 @@ export async function runBootstrap(
     baselineCollectionId = baselineCollectionId || releaseEntry.collections.baseline;
     smokeCollectionId = smokeCollectionId || releaseEntry.collections.smoke;
     contractCollectionId = contractCollectionId || releaseEntry.collections.contract;
+  }
+
+  if (inputs.collectionSyncMode === 'reuse') {
+    try {
+      const raw = readFileSync('.postman/resources.yaml', 'utf8');
+      const config = loadYaml(raw) as Record<string, unknown> | null;
+      const cloudCols = (config?.cloudResources as Record<string, unknown> | undefined)?.collections as Record<string, string> | undefined;
+      if (cloudCols) {
+        if (!baselineCollectionId) {
+          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Baseline]'));
+          if (match) { baselineCollectionId = match[1]; dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml'); }
+        }
+        if (!smokeCollectionId) {
+          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Smoke]'));
+          if (match) { smokeCollectionId = match[1]; dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml'); }
+        }
+        if (!contractCollectionId) {
+          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Contract]'));
+          if (match) { contractCollectionId = match[1]; dependencies.core.info('Resolved contract-collection-id from .postman/resources.yaml'); }
+        }
+      }
+    } catch { /* file doesn't exist */ }
   }
 
   if (dependencies.github) {
@@ -1368,6 +1451,29 @@ export async function runBootstrap(
         );
       }
     );
+  }
+
+  if (releaseLabel) {
+    releasesManifest = applyReleaseEntry(
+      releasesManifest,
+      releaseLabel,
+      outputs,
+      inputs,
+      shouldSetCurrentPointers
+    );
+  }
+
+  // Write releases manifest to disk and emit as output
+  if (releaseLabel && Object.keys(releasesManifest.releases).length > 0) {
+    try {
+      mkdirSync('.postman', { recursive: true });
+      writeFileSync('.postman/releases.yaml', dumpYaml(releasesManifest as unknown as Record<string, unknown>, {
+        lineWidth: -1
+      }));
+    } catch (err) {
+      dependencies.core.warning(`Failed to write .postman/releases.yaml: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    outputs['releases-json'] = JSON.stringify(releasesManifest);
   }
 
   for (const [name, value] of Object.entries(outputs)) {
