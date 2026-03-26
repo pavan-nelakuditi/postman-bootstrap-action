@@ -28728,6 +28728,12 @@ var openAlphaActionContract = {
       description: "Existing contract collection ID.",
       required: false
     },
+    "sync-examples": {
+      description: "Whether linked spec/collection relations should enable example syncing.",
+      required: false,
+      default: "true",
+      allowedValues: ["true", "false"]
+    },
     "collection-sync-mode": {
       description: "Collection lifecycle policy: reuse existing collections, refresh them from the latest spec, or version them by release label.",
       required: false,
@@ -29659,6 +29665,26 @@ var BifrostInternalIntegrationAdapter = class {
       options.workerBaseUrl || "https://catalog-admin.postman-account2009.workers.dev"
     ).replace(/\/+$/, "");
   }
+  async proxyRequest(service, method, requestPath, body) {
+    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const headers = {
+      "Content-Type": "application/json",
+      "x-access-token": this.accessToken
+    };
+    if (this.teamId) {
+      headers["x-entity-team-id"] = this.teamId;
+    }
+    return this.fetchImpl(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        service,
+        method,
+        path: requestPath,
+        ...body !== void 0 ? { body } : {}
+      })
+    });
+  }
   async assignWorkspaceToGovernanceGroup(workspaceId, domain, mappingJson) {
     let mapping;
     try {
@@ -29752,14 +29778,6 @@ var BifrostInternalIntegrationAdapter = class {
     }
   }
   async connectWorkspaceToRepository(workspaceId, repoUrl) {
-    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
-    const headers = {
-      "Content-Type": "application/json",
-      "x-access-token": this.accessToken
-    };
-    if (this.teamId) {
-      headers["x-entity-team-id"] = this.teamId;
-    }
     const payload = {
       service: "workspaces",
       method: "POST",
@@ -29770,11 +29788,12 @@ var BifrostInternalIntegrationAdapter = class {
         versionControl: true
       }
     };
-    const response = await this.fetchImpl(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
-    });
+    const response = await this.proxyRequest(
+      payload.service,
+      payload.method,
+      payload.path,
+      payload.body
+    );
     if (response.ok) return;
     if (response.status === 400) {
       const body = await response.text();
@@ -29791,29 +29810,68 @@ var BifrostInternalIntegrationAdapter = class {
     }
     throw await HttpError.fromResponse(response, {
       method: "POST",
-      requestHeaders: headers,
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "x-access-token": this.accessToken,
+        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+      },
       secretValues: [this.accessToken],
-      url
+      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
+    });
+  }
+  async linkCollectionsToSpecification(specificationId, collections) {
+    if (collections.length === 0) {
+      return;
+    }
+    const response = await this.proxyRequest(
+      "specification",
+      "put",
+      `/specifications/${specificationId}/collections`,
+      collections.map((collection) => ({
+        collectionId: collection.collectionId,
+        ...collection.syncOptions ? { syncOptions: collection.syncOptions } : {}
+      }))
+    );
+    if (response.ok) {
+      return;
+    }
+    throw await HttpError.fromResponse(response, {
+      method: "POST",
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "x-access-token": this.accessToken,
+        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+      },
+      secretValues: [this.accessToken],
+      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
+    });
+  }
+  async syncCollection(specificationId, collectionId) {
+    const response = await this.proxyRequest(
+      "specification",
+      "post",
+      `/specifications/${specificationId}/collections/${collectionId}/sync`
+    );
+    if (response.ok) {
+      return;
+    }
+    throw await HttpError.fromResponse(response, {
+      method: "POST",
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "x-access-token": this.accessToken,
+        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+      },
+      secretValues: [this.accessToken],
+      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
     });
   }
   async getWorkspaceGitRepoUrl(workspaceId) {
-    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
-    const headers = {
-      "Content-Type": "application/json",
-      "x-access-token": this.accessToken
-    };
-    if (this.teamId) {
-      headers["x-entity-team-id"] = this.teamId;
-    }
-    const response = await this.fetchImpl(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        service: "workspaces",
-        method: "GET",
-        path: `/workspaces/${workspaceId}/filesystem`
-      })
-    });
+    const response = await this.proxyRequest(
+      "workspaces",
+      "GET",
+      `/workspaces/${workspaceId}/filesystem`
+    );
     if (response.status === 404) return null;
     if (!response.ok) return null;
     const body = await response.text();
@@ -29996,6 +30054,13 @@ function requireInput(actionCore, name) {
 function optionalInput(actionCore, name) {
   return normalizeInputValue(actionCore.getInput(name));
 }
+function parseBooleanInput(value, defaultValue) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
 function parseCollectionSyncMode(value) {
   if (value === "reuse" || value === "version") {
     return value;
@@ -30040,6 +30105,7 @@ function resolveInputs(env = process.env) {
     baselineCollectionId: getInput("baseline-collection-id", env),
     smokeCollectionId: getInput("smoke-collection-id", env),
     contractCollectionId: getInput("contract-collection-id", env),
+    syncExamples: parseBooleanInput(getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
@@ -30099,6 +30165,7 @@ function readActionInputs(actionCore) {
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, "baseline-collection-id"),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, "smoke-collection-id"),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, "contract-collection-id"),
+    INPUT_SYNC_EXAMPLES: optionalInput(actionCore, "sync-examples") ?? openAlphaActionContract.inputs["sync-examples"].default,
     INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? openAlphaActionContract.inputs["collection-sync-mode"].default,
     INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? openAlphaActionContract.inputs["spec-sync-mode"].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, "release-label"),
@@ -30671,6 +30738,48 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       ]);
     }
   );
+  const linkedCollectionIds = [
+    outputs["baseline-collection-id"],
+    outputs["smoke-collection-id"],
+    outputs["contract-collection-id"]
+  ].filter(Boolean);
+  if (linkedCollectionIds.length > 0) {
+    if (dependencies.internalIntegration) {
+      await runGroup(
+        dependencies.core,
+        "Link Collections to Specification",
+        async () => {
+          await dependencies.internalIntegration?.linkCollectionsToSpecification(
+            outputs["spec-id"],
+            linkedCollectionIds.map((collectionId) => ({
+              collectionId,
+              syncOptions: {
+                syncExamples: inputs.syncExamples
+              }
+            }))
+          );
+        }
+      );
+      await runGroup(
+        dependencies.core,
+        "Sync Linked Collections",
+        async () => {
+          await Promise.all(
+            linkedCollectionIds.map(
+              (collectionId) => dependencies.internalIntegration.syncCollection(
+                outputs["spec-id"],
+                collectionId
+              )
+            )
+          );
+        }
+      );
+    } else {
+      dependencies.core.warning(
+        "Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured"
+      );
+    }
+  }
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);
   }
@@ -30858,6 +30967,7 @@ function parseCliArgs(argv, env = process.env) {
     "baseline-collection-id",
     "smoke-collection-id",
     "contract-collection-id",
+    "sync-examples",
     "collection-sync-mode",
     "spec-sync-mode",
     "release-label",

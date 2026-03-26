@@ -191,6 +191,7 @@ export function parseCliArgs(argv: string[], env: NodeJS.ProcessEnv = process.en
     'baseline-collection-id',
     'smoke-collection-id',
     'contract-collection-id',
+    'sync-examples',
     'collection-sync-mode',
     'spec-sync-mode',
     'release-label',

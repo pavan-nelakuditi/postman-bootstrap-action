@@ -14,6 +14,8 @@ describe('parseCliArgs', () => {
         'pmak-test',
         '--workspace-admin-user-ids',
         '101,102',
+        '--sync-examples',
+        'false',
         '--collection-sync-mode',
         'version',
         '--spec-sync-mode',
@@ -36,6 +38,7 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_SPEC_URL).toBe('https://example.test/openapi.yaml');
     expect(config.inputEnv.INPUT_POSTMAN_API_KEY).toBe('pmak-test');
     expect(config.inputEnv.INPUT_WORKSPACE_ADMIN_USER_IDS).toBe('101,102');
+    expect(config.inputEnv.INPUT_SYNC_EXAMPLES).toBe('false');
     expect(config.inputEnv.INPUT_COLLECTION_SYNC_MODE).toBe('version');
     expect(config.inputEnv.INPUT_SPEC_SYNC_MODE).toBe('version');
     expect(config.inputEnv.INPUT_RELEASE_LABEL).toBe('v1.2.3');

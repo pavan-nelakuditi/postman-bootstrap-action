@@ -42,6 +42,14 @@ describe('open-alpha action contract', () => {
   });
 
   it('defaults lifecycle controls in contract, manifest, and runtime', () => {
+    expect(openAlphaActionContract.inputs['sync-examples'].default).toBe('true');
+    expect(openAlphaActionContract.inputs['sync-examples'].allowedValues).toEqual([
+      'true',
+      'false'
+    ]);
+    expect(actionManifest.inputs['sync-examples'].default).toBe('true');
+    expect(resolveInputs({}).syncExamples).toBe(true);
+
     expect(openAlphaActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
     expect(openAlphaActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
       'reuse',

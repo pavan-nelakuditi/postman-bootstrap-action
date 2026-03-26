@@ -60,6 +60,7 @@ function createCoreStub(values: Record<string, string> = {}) {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'core-payments',
+    syncExamples: true,
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',
     releaseLabel: undefined,
@@ -148,7 +149,9 @@ describe('bootstrap action', () => {
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
     const internalIntegration = {
-      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined)
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+      syncCollection: vi.fn().mockResolvedValue(undefined)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response('openapi: 3.1.0', {
@@ -177,6 +180,29 @@ describe('bootstrap action', () => {
     );
     expect(postman.addAdminsToWorkspace).toHaveBeenCalledWith('ws-123', '101,102');
     expect(order).toEqual(['[Baseline]', '[Smoke]', '[Contract]']);
+    expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
+      'spec-123',
+      [
+        { collectionId: 'col-baseline', syncOptions: { syncExamples: true } },
+        { collectionId: 'col-smoke', syncOptions: { syncExamples: true } },
+        { collectionId: 'col-contract', syncOptions: { syncExamples: true } }
+      ]
+    );
+    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
+      1,
+      'spec-123',
+      'col-baseline'
+    );
+    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
+      2,
+      'spec-123',
+      'col-smoke'
+    );
+    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
+      3,
+      'spec-123',
+      'col-contract'
+    );
     expect(result).toMatchObject({
       'workspace-id': 'ws-123',
       'workspace-name': '[AF] core-payments',
@@ -730,7 +756,7 @@ describe('bootstrap action', () => {
   });
 
   it('skips governance assignment when postman-access-token is absent', async () => {
-    const { core } = createCoreStub();
+    const { core, warnings } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
     const postman = {
@@ -764,6 +790,64 @@ describe('bootstrap action', () => {
 
     expect(result['workspace-id']).toBe('ws-123');
     expect(postman.createWorkspace).toHaveBeenCalled();
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured')
+      )
+    ).toBe(true);
+  });
+
+  it('passes syncExamples=false when configured', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockResolvedValueOnce('col-baseline')
+        .mockResolvedValueOnce('col-smoke')
+        .mockResolvedValueOnce('col-contract'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+      syncCollection: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await runBootstrap(
+      createInputs({ syncExamples: false }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        internalIntegration,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
+      'spec-123',
+      [
+        { collectionId: 'col-baseline', syncOptions: { syncExamples: false } },
+        { collectionId: 'col-smoke', syncOptions: { syncExamples: false } },
+        { collectionId: 'col-contract', syncOptions: { syncExamples: false } }
+      ]
+    );
   });
 
   it('runs without any GitHub dependency', async () => {

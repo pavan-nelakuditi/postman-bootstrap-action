@@ -17,6 +17,10 @@ inputs:
   contract-collection-id:
     description: Existing contract collection ID
     required: false
+  sync-examples:
+    description: Whether linked spec/collection relations should enable example syncing
+    required: false
+    default: 'true'
   collection-sync-mode:
     description: Collection lifecycle policy (reuse, refresh, or version)
     required: false

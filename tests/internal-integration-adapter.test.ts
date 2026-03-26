@@ -184,6 +184,75 @@ describe('internal integration adapter', () => {
     );
   });
 
+  it('routes specification collection linking through the Bifrost proxy with sync options', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: { updated: 1 } })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      fetchImpl
+    });
+
+    await adapter.linkCollectionsToSpecification('spec-123', [
+      {
+        collectionId: 'col-1',
+        syncOptions: { syncExamples: true }
+      }
+    ]);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-access-token': 'token-123',
+          'x-entity-team-id': '11430732'
+        }),
+        body: JSON.stringify({
+          service: 'specification',
+          method: 'put',
+          path: '/specifications/spec-123/collections',
+          body: [
+            {
+              collectionId: 'col-1',
+              syncOptions: { syncExamples: true }
+            }
+          ]
+        })
+      })
+    );
+  });
+
+  it('routes specification collection sync through the Bifrost proxy', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: { taskId: 'task-1' } })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      fetchImpl
+    });
+
+    await adapter.syncCollection('spec-123', 'col-1');
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          service: 'specification',
+          method: 'post',
+          path: '/specifications/spec-123/collections/col-1/sync'
+        })
+      })
+    );
+  });
+
   it('treats projectAlreadyConnected as idempotent when the same repo is linked', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
       // First call: connectWorkspaceToRepository POST returns 400 projectAlreadyConnected

@@ -43,6 +43,12 @@ export const openAlphaActionContract: BetaActionContract = {
       description: 'Existing contract collection ID.',
       required: false
     },
+    'sync-examples': {
+      description: 'Whether linked spec/collection relations should enable example syncing.',
+      required: false,
+      default: 'true',
+      allowedValues: ['true', 'false']
+    },
     'collection-sync-mode': {
       description:
         'Collection lifecycle policy: reuse existing collections, refresh them from the latest spec, or version them by release label.',

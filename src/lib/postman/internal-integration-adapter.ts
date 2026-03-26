@@ -9,6 +9,13 @@ export interface GovernanceAssociation {
   systemEnvId: string;
 }
 
+export interface SpecificationCollectionLink {
+  collectionId: string;
+  syncOptions?: {
+    syncExamples: boolean;
+  };
+}
+
 export interface InternalIntegrationAdapterOptions {
   accessToken: string;
   backend: string;
@@ -32,6 +39,14 @@ export interface InternalIntegrationAdapter {
     workspaceId: string,
     repoUrl: string
   ): Promise<void>;
+  linkCollectionsToSpecification(
+    specificationId: string,
+    collections: SpecificationCollectionLink[]
+  ): Promise<void>;
+  syncCollection(
+    specificationId: string,
+    collectionId: string
+  ): Promise<void>;
 }
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
@@ -51,6 +66,33 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       options.workerBaseUrl ||
         'https://catalog-admin.postman-account2009.workers.dev'
     ).replace(/\/+$/, '');
+  }
+
+  private async proxyRequest(
+    service: string,
+    method: string,
+    requestPath: string,
+    body?: unknown
+  ): Promise<Response> {
+    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-access-token': this.accessToken
+    };
+    if (this.teamId) {
+      headers['x-entity-team-id'] = this.teamId;
+    }
+
+    return this.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        service,
+        method,
+        path: requestPath,
+        ...(body !== undefined ? { body } : {})
+      })
+    });
   }
 
   async assignWorkspaceToGovernanceGroup(
@@ -168,14 +210,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     workspaceId: string,
     repoUrl: string
   ): Promise<void> {
-    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-access-token': this.accessToken
-    };
-    if (this.teamId) {
-      headers['x-entity-team-id'] = this.teamId;
-    }
     const payload = {
       service: 'workspaces',
       method: 'POST',
@@ -187,11 +221,12 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       }
     };
 
-    const response = await this.fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload)
-    });
+    const response = await this.proxyRequest(
+      payload.service,
+      payload.method,
+      payload.path,
+      payload.body
+    );
 
     if (response.ok) return;
 
@@ -215,31 +250,82 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
 
     throw await HttpError.fromResponse(response, {
       method: 'POST',
-      requestHeaders: headers,
+      requestHeaders: {
+        'Content-Type': 'application/json',
+        'x-access-token': this.accessToken,
+        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+      },
       secretValues: [this.accessToken],
-      url
+      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
+    });
+  }
+
+  async linkCollectionsToSpecification(
+    specificationId: string,
+    collections: SpecificationCollectionLink[]
+  ): Promise<void> {
+    if (collections.length === 0) {
+      return;
+    }
+
+    const response = await this.proxyRequest(
+      'specification',
+      'put',
+      `/specifications/${specificationId}/collections`,
+      collections.map((collection) => ({
+        collectionId: collection.collectionId,
+        ...(collection.syncOptions ? { syncOptions: collection.syncOptions } : {})
+      }))
+    );
+
+    if (response.ok) {
+      return;
+    }
+
+    throw await HttpError.fromResponse(response, {
+      method: 'POST',
+      requestHeaders: {
+        'Content-Type': 'application/json',
+        'x-access-token': this.accessToken,
+        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+      },
+      secretValues: [this.accessToken],
+      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
+    });
+  }
+
+  async syncCollection(
+    specificationId: string,
+    collectionId: string
+  ): Promise<void> {
+    const response = await this.proxyRequest(
+      'specification',
+      'post',
+      `/specifications/${specificationId}/collections/${collectionId}/sync`
+    );
+
+    if (response.ok) {
+      return;
+    }
+
+    throw await HttpError.fromResponse(response, {
+      method: 'POST',
+      requestHeaders: {
+        'Content-Type': 'application/json',
+        'x-access-token': this.accessToken,
+        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+      },
+      secretValues: [this.accessToken],
+      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
     });
   }
 
   private async getWorkspaceGitRepoUrl(workspaceId: string): Promise<string | null> {
-    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-access-token': this.accessToken
-    };
-    if (this.teamId) {
-      headers['x-entity-team-id'] = this.teamId;
-    }
-
-    const response = await this.fetchImpl(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        service: 'workspaces',
-        method: 'GET',
-        path: `/workspaces/${workspaceId}/filesystem`
-      })
-    });
+    const response = await this.proxyRequest(
+      'workspaces',
+      'GET',
+      `/workspaces/${workspaceId}/filesystem`
+    );
 
     if (response.status === 404) return null;
     if (!response.ok) return null;

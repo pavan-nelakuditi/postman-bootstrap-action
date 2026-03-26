@@ -19,6 +19,7 @@ export interface ResolvedInputs {
   baselineCollectionId?: string;
   smokeCollectionId?: string;
   contractCollectionId?: string;
+  syncExamples: boolean;
   collectionSyncMode: 'reuse' | 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
   releaseLabel?: string;
@@ -101,7 +102,7 @@ export interface BootstrapExecutionDependencies {
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
-    'assignWorkspaceToGovernanceGroup'
+    'assignWorkspaceToGovernanceGroup' | 'linkCollectionsToSpecification' | 'syncCollection'
   >;
   postman: Pick<
     PostmanAssetsClient,
@@ -250,6 +251,7 @@ export function resolveInputs(
     baselineCollectionId: getInput('baseline-collection-id', env),
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
+    syncExamples: parseBooleanInput(getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
     releaseLabel: getInput('release-label', env),
@@ -322,6 +324,9 @@ export function readActionInputs(
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, 'baseline-collection-id'),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
+    INPUT_SYNC_EXAMPLES:
+      optionalInput(actionCore, 'sync-examples') ??
+      openAlphaActionContract.inputs['sync-examples'].default,
     INPUT_COLLECTION_SYNC_MODE:
       optionalInput(actionCore, 'collection-sync-mode') ??
       openAlphaActionContract.inputs['collection-sync-mode'].default,
@@ -1024,6 +1029,51 @@ export async function runBootstrap(
       ]);
     }
   );
+
+  const linkedCollectionIds = [
+    outputs['baseline-collection-id'],
+    outputs['smoke-collection-id'],
+    outputs['contract-collection-id']
+  ].filter(Boolean);
+
+  if (linkedCollectionIds.length > 0) {
+    if (dependencies.internalIntegration) {
+      await runGroup(
+        dependencies.core,
+        'Link Collections to Specification',
+        async () => {
+          await dependencies.internalIntegration?.linkCollectionsToSpecification(
+            outputs['spec-id'],
+            linkedCollectionIds.map((collectionId) => ({
+              collectionId,
+              syncOptions: {
+                syncExamples: inputs.syncExamples
+              }
+            }))
+          );
+        }
+      );
+
+      await runGroup(
+        dependencies.core,
+        'Sync Linked Collections',
+        async () => {
+          await Promise.all(
+            linkedCollectionIds.map((collectionId) =>
+              dependencies.internalIntegration!.syncCollection(
+                outputs['spec-id'],
+                collectionId
+              )
+            )
+          );
+        }
+      );
+    } else {
+      dependencies.core.warning(
+        'Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured'
+      );
+    }
+  }
 
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);

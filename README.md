@@ -202,6 +202,7 @@ steps:
 | `baseline-collection-id` | | Reuse an existing baseline collection. |
 | `smoke-collection-id` | | Reuse an existing smoke collection. |
 | `contract-collection-id` | | Reuse an existing contract collection. |
+| `sync-examples` | `true` | Whether linked spec/collection relations should enable example syncing during cloud linkage. |
 | `collection-sync-mode` | `refresh` | Collection lifecycle policy. `reuse` keeps existing collections, `refresh` regenerates the current collection set from the latest spec, and `version` creates or reuses release-scoped collections. |
 | `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
 | `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
@@ -246,6 +247,14 @@ Current Postman asset state lives in `.postman/resources.yaml`.
 
 - `update` and `reuse` modes resolve current-state mappings from the checked-out ref.
 - `version` mode reuses only the checked-out ref's mappings; release history lives in git history and tags, not in a separate manifest file or repository variables.
+
+### Cloud spec-to-collection syncing
+
+After collections exist, bootstrap links them to the cloud specification and triggers a spec-side collection sync when `postman-access-token` is available.
+
+- `sync-examples: true` (default) enables example syncing in that relation setup.
+- `sync-examples: false` keeps the relation but disables example syncing.
+- If `postman-access-token` is missing, bootstrap warns and skips the cloud link/sync step.
 
 ### Contract smoke monitoring
 
