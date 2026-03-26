@@ -107,6 +107,8 @@ outputs:
     description: JSON summary of generated collections
   lint-summary-json:
     description: JSON summary of lint errors and warnings
+  releases-json:
+    description: JSON-serialized releases manifest for repo-sync to persist as .postman/releases.yaml
 runs:
   using: node20
   main: dist/index.cjs

@@ -60,7 +60,8 @@ describe('toDotenv', () => {
       'smoke-collection-id': 'col-smoke',
       'contract-collection-id': 'col-contract',
       'collections-json': '{"baseline":"col-baseline"}',
-      'lint-summary-json': '{"errors":0}'
+      'lint-summary-json': '{"errors":0}',
+      'releases-json': ''
     });
 
     expect(dotenv).toContain('POSTMAN_BOOTSTRAP_WORKSPACE_ID="ws-123"');
@@ -115,7 +116,8 @@ describe('runCli', () => {
             'smoke-collection-id': 'col-smoke',
             'contract-collection-id': 'col-contract',
             'collections-json': '{"baseline":"col-baseline","smoke":"col-smoke","contract":"col-contract"}',
-            'lint-summary-json': '{"errors":0,"total":0,"violations":[],"warnings":0}'
+            'lint-summary-json': '{"errors":0,"total":0,"violations":[],"warnings":0}',
+            'releases-json': ''
           };
         },
         writeStdout: (chunk) => {
