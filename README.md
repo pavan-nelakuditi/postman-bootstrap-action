@@ -82,6 +82,77 @@ jobs:
 
 If you want the action to discover prior bootstrap state automatically on reruns, provide a `github-token` so it can read the stored repository variables before creating new Postman assets.
 
+## CLI Usage (Non-GitHub CI)
+
+The CLI is available for GitLab CI, Bitbucket Pipelines, Azure DevOps, and other CI systems.
+GitHub Actions users should continue using the `action.yml` interface.
+
+Install globally:
+
+```bash
+npm install -g postman-bootstrap-action
+```
+
+Basic usage:
+
+```bash
+postman-bootstrap \
+  --project-name core-payments \
+  --spec-url https://example.com/openapi.yaml \
+  --postman-api-key "$POSTMAN_API_KEY" \
+  --postman-access-token "$POSTMAN_ACCESS_TOKEN" \
+  --result-json bootstrap-result.json \
+  --dotenv-path bootstrap.env
+```
+
+The CLI auto-detects the CI provider from environment variables for GitHub, GitLab, Bitbucket, and Azure DevOps.
+It writes JSON to stdout, with all logs sent to stderr.
+Use `--result-json` to write the JSON payload to a file, and `--dotenv-path` to emit shell-sourceable `KEY=VALUE` output with the `POSTMAN_BOOTSTRAP_` prefix.
+
+Example GitLab CI job:
+
+```yaml
+bootstrap:
+  image: node:20
+  script:
+    - npm install -g postman-bootstrap-action
+    - postman-bootstrap --project-name core-payments --spec-url "$SPEC_URL" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+  artifacts:
+    paths:
+      - bootstrap-result.json
+      - bootstrap.env
+```
+
+Example Bitbucket Pipelines step:
+
+```yaml
+pipelines:
+  default:
+    - step:
+        image: node:20
+        script:
+          - npm install -g postman-bootstrap-action
+          - postman-bootstrap --project-name core-payments --spec-url "$SPEC_URL" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+        artifacts:
+          - bootstrap-result.json
+          - bootstrap.env
+```
+
+Example Azure DevOps job:
+
+```yaml
+steps:
+  - task: NodeTool@0
+    inputs:
+      versionSpec: '20.x'
+  - script: |
+      npm install -g postman-bootstrap-action
+      postman-bootstrap --project-name core-payments --spec-url "$(SPEC_URL)" --postman-api-key "$(POSTMAN_API_KEY)" --postman-access-token "$(POSTMAN_ACCESS_TOKEN)" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+    displayName: Bootstrap Postman assets
+  - publish: bootstrap-result.json
+  - publish: bootstrap.env
+```
+
 ## Inputs
 
 | Input | Default | Notes |
