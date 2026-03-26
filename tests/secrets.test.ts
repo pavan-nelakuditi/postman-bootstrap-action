@@ -4,7 +4,6 @@ import { HttpError } from '../src/lib/http-error.js';
 import {
   REDACTED,
   redactSecrets,
-  sanitizeError,
   sanitizeHeaders
 } from '../src/lib/secrets.js';
 
@@ -18,7 +17,7 @@ describe('secret safety rails', () => {
     expect(sanitized).toBe(`Authorization: Bearer ${REDACTED} and key ${REDACTED}`);
   });
 
-  it('sanitizes headers and error messages before surfacing them', () => {
+  it('sanitizes headers before surfacing them', () => {
     const headers = sanitizeHeaders(
       {
         Authorization: 'Bearer token-123',
@@ -27,17 +26,12 @@ describe('secret safety rails', () => {
       },
       ['token-123', 'pmak-secret']
     );
-    const error = sanitizeError(new Error('failed with token-123 and pmak-secret'), [
-      'token-123',
-      'pmak-secret'
-    ]);
 
     expect(headers).toEqual({
       authorization: REDACTED,
       'x-api-key': REDACTED,
       'x-trace-id': `trace-${REDACTED}`
     });
-    expect(error.message).toBe(`failed with ${REDACTED} and ${REDACTED}`);
   });
 
   it('builds sanitized HTTP diagnostics without leaking token material', () => {

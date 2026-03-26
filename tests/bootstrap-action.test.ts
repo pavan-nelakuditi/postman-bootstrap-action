@@ -139,7 +139,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined)
@@ -186,6 +187,10 @@ describe('bootstrap action', () => {
     );
     expect(github.setRepositoryVariable).toHaveBeenCalledWith(
       'POSTMAN_WORKSPACE_ID',
+      'ws-123'
+    );
+    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
+      'POSTMAN_CORE_PAYMENTS_WORKSPACE_ID',
       'ws-123'
     );
     expect(result).toMatchObject({
@@ -238,7 +243,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
 
     await expect(
@@ -256,6 +262,100 @@ describe('bootstrap action', () => {
     expect(postman.generateCollection).not.toHaveBeenCalled();
   });
 
+  it('restores previous spec content when lint fails after an update', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub(
+      JSON.stringify({
+        violations: [
+          {
+            issue: 'Broken schema',
+            path: '$.paths./payments.get',
+            severity: 'ERROR'
+          }
+        ]
+      })
+    );
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.0.0\ninfo:\n  title: old\n'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await expect(
+      runBootstrap(
+        createInputs({ workspaceId: 'ws-existing', specId: 'spec-existing' }),
+        {
+          core,
+          exec: execStub,
+          io: ioStub,
+          postman,
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('openapi: 3.1.0', { status: 200 })
+          )
+        }
+      )
+    ).rejects.toThrow('Spec lint found 1 errors');
+
+    expect(postman.getSpecContent).toHaveBeenCalledWith('spec-existing');
+    expect(postman.updateSpec).toHaveBeenNthCalledWith(
+      1,
+      'spec-existing',
+      'openapi: 3.1.0',
+      'ws-existing'
+    );
+    expect(postman.updateSpec).toHaveBeenNthCalledWith(
+      2,
+      'spec-existing',
+      'openapi: 3.0.0\ninfo:\n  title: old\n',
+      'ws-existing'
+    );
+  });
+
+  it('validates normalized spec structure before upload or update', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn()
+    };
+
+    await expect(
+      runBootstrap(createInputs(), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('info:\n  title: Missing version\n', { status: 200 })
+        )
+      })
+    ).rejects.toThrow('Spec is missing "openapi" or "swagger" version field');
+
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+  });
+
   it('reuses existing workspace, spec, and collection ids from explicit inputs', async () => {
     const { core, infos, outputs } = createCoreStub();
     const execStub = createExecStub();
@@ -271,7 +371,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
     const github = {
       setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
@@ -338,7 +439,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
     const github = {
       setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
@@ -369,6 +471,8 @@ describe('bootstrap action', () => {
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(postman.updateSpec).toHaveBeenCalledWith('spec-from-vars', 'openapi: 3.1.0', 'ws-from-vars');
+    expect(github.getRepositoryVariable).toHaveBeenCalledWith('POSTMAN_CORE_PAYMENTS_WORKSPACE_ID');
+    expect(github.getRepositoryVariable).toHaveBeenCalledWith('POSTMAN_WORKSPACE_ID');
     expect(result).toMatchObject({
       'workspace-id': 'ws-from-vars',
       'spec-id': 'spec-from-vars',
@@ -403,7 +507,8 @@ describe('bootstrap action', () => {
         inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
         tagCollection: vi.fn().mockResolvedValue(undefined),
         uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-        updateSpec: vi.fn().mockResolvedValue(undefined)
+        updateSpec: vi.fn().mockResolvedValue(undefined),
+        getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
       };
       const github = {
         setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
@@ -454,7 +559,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
 
     const result = await runBootstrap(
@@ -489,7 +595,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
 
     const result = await runBootstrap(
@@ -530,7 +637,8 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
 
     const result = await runBootstrap(createInputs(), {

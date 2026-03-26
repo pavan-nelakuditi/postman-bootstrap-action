@@ -17,17 +17,6 @@ export interface PostmanAssetsClientOptions {
   secretMasker?: SecretMasker;
 }
 
-/**
- * Normalize a git repository URL to a canonical lowercase form.
- * Handles GitHub and GitLab (cloud and self-hosted) HTTPS and SSH URLs.
- * Strips trailing `.git` suffixes and trailing slashes.
- *
- * @deprecated Alias preserved for backward compatibility. Use {@link normalizeGitRepoUrl}.
- */
-export function normalizeGitHubRepoUrl(url: string | null | undefined): string {
-  return normalizeGitRepoUrl(url);
-}
-
 export function normalizeGitRepoUrl(url: string | null | undefined): string {
   const raw = String(url || '').trim();
   if (!raw) return '';
@@ -195,7 +184,7 @@ export class PostmanAssetsClient {
       return {
         id: workspaceId
       };
-    }, 3, 2000);
+    }, { maxAttempts: 3, delayMs: 2000 });
   }
 
   async listWorkspaces(): Promise<Array<{ id: string; name: string; type: string }>> {
@@ -337,7 +326,7 @@ export class PostmanAssetsClient {
       if (verified?.id !== specId) {
         throw new Error(`Spec preflight response did not contain expected id ${specId}`);
       }
-    }, 3, 2000);
+    }, { maxAttempts: 3, delayMs: 2000 });
 
     return specId;
   }
@@ -354,6 +343,15 @@ export class PostmanAssetsClient {
       method: 'PATCH',
       body: JSON.stringify({ content: specContent })
     });
+  }
+
+  async getSpecContent(specId: string): Promise<string | undefined> {
+    try {
+      const result = await this.request(`/specs/${specId}/files/index.yaml`);
+      return typeof result?.content === 'string' ? result.content : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async generateCollection(

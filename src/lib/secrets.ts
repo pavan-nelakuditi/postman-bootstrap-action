@@ -1,5 +1,9 @@
 export const REDACTED = '[REDACTED]';
 export type SecretMasker = (input: string) => string;
+export type HeaderBag =
+  | Array<[string, string]>
+  | Headers
+  | Record<string, string>;
 
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
@@ -23,7 +27,6 @@ function appendSecretValues(value: unknown, results: string[]): void {
   if (value === null || value === undefined) {
     return;
   }
-
   if (typeof value === 'string') {
     const normalized = value.trim();
     if (normalized) {
@@ -31,12 +34,10 @@ function appendSecretValues(value: unknown, results: string[]): void {
     }
     return;
   }
-
   if (typeof value === 'number' || typeof value === 'boolean') {
     results.push(String(value));
     return;
   }
-
   if (Array.isArray(value) || isIterable(value)) {
     for (const entry of value) {
       appendSecretValues(entry, results);
@@ -57,11 +58,9 @@ export function redactSecrets(
 ): string {
   const source = String(input ?? '');
   const secrets = normalizeSecretValues(secretValues);
-
-  if (source.length === 0 || secrets.length === 0) {
+  if (!source || secrets.length === 0) {
     return source;
   }
-
   return secrets.reduce((sanitized, secret) => {
     if (!secret) {
       return sanitized;
@@ -77,26 +76,23 @@ export function createSecretMasker(
   return (input: string) => redactSecrets(input, secretValues, replacement);
 }
 
-function headerEntries(headers: HeadersInit): Array<[string, string]> {
+function headerEntries(headers: HeaderBag): Array<[string, string]> {
   if (headers instanceof Headers) {
     return Array.from(headers.entries());
   }
-
   if (Array.isArray(headers)) {
-    return headers.map(([name, value]) => [name, value]);
+    return headers.map(([name, value]) => [name, String(value)]);
   }
-
   return Object.entries(headers).map(([name, value]) => [name, String(value)]);
 }
 
 export function sanitizeHeaders(
-  headers: HeadersInit | undefined,
+  headers: HeaderBag | undefined,
   secretValues: unknown
 ): Record<string, string> {
   if (!headers) {
     return {};
   }
-
   const sanitized: Record<string, string> = {};
   for (const [name, value] of headerEntries(headers)) {
     const normalizedName = name.toLowerCase();
@@ -105,20 +101,4 @@ export function sanitizeHeaders(
       : redactSecrets(value, secretValues);
   }
   return sanitized;
-}
-
-export function sanitizeError(
-  error: unknown,
-  secretValues: unknown
-): Error {
-  if (error instanceof Error) {
-    const sanitized = new Error(redactSecrets(error.message, secretValues));
-    sanitized.name = error.name;
-    if (error.stack) {
-      sanitized.stack = redactSecrets(error.stack, secretValues);
-    }
-    return sanitized;
-  }
-
-  return new Error(redactSecrets(String(error), secretValues));
 }

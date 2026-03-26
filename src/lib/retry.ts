@@ -13,8 +13,8 @@ export interface RetryOptions {
   delayMs?: number;
   backoffMultiplier?: number;
   maxDelayMs?: number;
-  shouldRetry?: (error: unknown, context: RetryDecisionContext) => boolean;
   onRetry?: (context: RetryContext) => void | Promise<void>;
+  shouldRetry?: (error: unknown, context: RetryDecisionContext) => boolean;
   sleep?: (delayMs: number) => Promise<void>;
 }
 
@@ -24,69 +24,53 @@ export function sleep(delayMs: number): Promise<void> {
   });
 }
 
-function normalizeRetryOptions(
-  retriesOrOptions: number | RetryOptions,
-  delayMs?: number
-): Required<RetryOptions> {
-  if (typeof retriesOrOptions === 'number') {
-    return {
-      maxAttempts: Math.max(1, retriesOrOptions),
-      delayMs: Math.max(0, delayMs ?? 2000),
-      backoffMultiplier: 1,
-      maxDelayMs: Number.POSITIVE_INFINITY,
-      shouldRetry: () => true,
-      onRetry: async () => undefined,
-      sleep
-    };
-  }
-
+function normalizeRetryOptions(options: RetryOptions): Required<RetryOptions> {
   return {
-    maxAttempts: Math.max(1, retriesOrOptions.maxAttempts ?? 3),
-    delayMs: Math.max(0, retriesOrOptions.delayMs ?? 2000),
-    backoffMultiplier: Math.max(1, retriesOrOptions.backoffMultiplier ?? 1),
+    maxAttempts: Math.max(1, options.maxAttempts ?? 3),
+    delayMs: Math.max(0, options.delayMs ?? 2000),
+    backoffMultiplier: Math.max(1, options.backoffMultiplier ?? 1),
     maxDelayMs:
-      retriesOrOptions.maxDelayMs === undefined
+      options.maxDelayMs === undefined
         ? Number.POSITIVE_INFINITY
-        : Math.max(0, retriesOrOptions.maxDelayMs),
-    shouldRetry: retriesOrOptions.shouldRetry ?? (() => true),
-    onRetry: retriesOrOptions.onRetry ?? (async () => undefined),
-    sleep: retriesOrOptions.sleep ?? sleep
+        : Math.max(0, options.maxDelayMs),
+    onRetry: options.onRetry ?? (async () => undefined),
+    shouldRetry: options.shouldRetry ?? (() => true),
+    sleep: options.sleep ?? sleep
   };
 }
 
 export async function retry<T>(
   operation: () => Promise<T>,
-  retriesOrOptions: number | RetryOptions = {},
-  delayMs?: number
+  options: RetryOptions = {}
 ): Promise<T> {
-  const options = normalizeRetryOptions(retriesOrOptions, delayMs);
-  let nextDelayMs = options.delayMs;
+  const normalized = normalizeRetryOptions(options);
+  let nextDelayMs = normalized.delayMs;
 
-  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+  for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
-      const canRetry =
-        attempt < options.maxAttempts &&
-        options.shouldRetry(error, {
+      const shouldRetry =
+        attempt < normalized.maxAttempts &&
+        normalized.shouldRetry(error, {
           attempt,
-          maxAttempts: options.maxAttempts
+          maxAttempts: normalized.maxAttempts
         });
 
-      if (!canRetry) {
+      if (!shouldRetry) {
         throw error;
       }
 
-      await options.onRetry({
+      await normalized.onRetry({
         attempt,
-        maxAttempts: options.maxAttempts,
+        maxAttempts: normalized.maxAttempts,
         delayMs: nextDelayMs,
         error
       });
-      await options.sleep(nextDelayMs);
+      await normalized.sleep(nextDelayMs);
       nextDelayMs = Math.min(
-        options.maxDelayMs,
-        Math.round(nextDelayMs * options.backoffMultiplier)
+        normalized.maxDelayMs,
+        Math.round(nextDelayMs * normalized.backoffMultiplier)
       );
     }
   }

@@ -1,5 +1,5 @@
 {
-  "name": "postman-bootstrap-action",
+  "name": "@postman-cse/onboarding-bootstrap",
   "version": "0.1.0-alpha.0",
   "description": "Public open-alpha Postman bootstrap GitHub Action.",
   "type": "module",
@@ -8,7 +8,7 @@
     "postman-bootstrap": "dist/cli.cjs"
   },
   "scripts": {
-    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.cjs && esbuild src/cli.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/cli.cjs",
+    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.cjs && esbuild src/cli.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/cli.cjs",
     "check:dist": "npm run build && git diff --exit-code -- dist",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -18,6 +18,9 @@
     "postman"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/exec": "^1.1.1",

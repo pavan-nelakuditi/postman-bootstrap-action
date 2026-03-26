@@ -66,6 +66,8 @@ interface BootstrapRepositoryVariables {
   lintWarnings: number;
 }
 
+type RepoVariableClient = Pick<GitHubApiClient, 'setRepositoryVariable' | 'getRepositoryVariable'>;
+
 export interface CoreLike {
   error(message: string): void;
   getInput(name: string, options?: { required?: boolean }): string;
@@ -100,7 +102,7 @@ export interface BootstrapExecutionDependencies {
     'error' | 'group' | 'info' | 'setOutput' | 'warning'
   >;
   exec: ExecLike;
-  github?: Pick<GitHubApiClient, 'setRepositoryVariable' | 'getRepositoryVariable'>;
+  github?: RepoVariableClient;
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
@@ -113,6 +115,7 @@ export interface BootstrapExecutionDependencies {
     | 'findWorkspacesByName'
     | 'generateCollection'
     | 'getAutoDerivedTeamId'
+    | 'getSpecContent'
     | 'getWorkspaceGitRepoUrl'
     | 'injectTests'
     | 'inviteRequesterToWorkspace'
@@ -517,31 +520,138 @@ export function normalizeSpecDocument(raw: string, warn: (msg: string) => void):
   return asJson ? `${JSON.stringify(doc, null, 2)}\n` : `${stringify(doc, { lineWidth: 0 })}\n`;
 }
 
+function validateSpecStructure(content: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    try {
+      parsed = parse(content);
+    } catch {
+      throw new Error('Spec content is not valid JSON or YAML');
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Spec content must be a JSON or YAML object');
+  }
+
+  const doc = parsed as Record<string, unknown>;
+  if (!doc.openapi && !doc.swagger) {
+    throw new Error('Spec is missing "openapi" or "swagger" version field');
+  }
+}
+
+function varName(projectName: string, baseName: string): string {
+  const slug = projectName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  return `POSTMAN_${slug}_${baseName}`;
+}
+
+async function readVariable(
+  github: RepoVariableClient | undefined,
+  projectName: string,
+  baseName: string
+): Promise<string | undefined> {
+  if (!github) {
+    return undefined;
+  }
+
+  const namespaced = await github
+    .getRepositoryVariable(varName(projectName, baseName))
+    .catch(() => undefined);
+  if (namespaced) {
+    return namespaced;
+  }
+
+  const legacy = await github
+    .getRepositoryVariable(`POSTMAN_${baseName}`)
+    .catch(() => undefined);
+  return legacy || undefined;
+}
+
+async function persistVariable(
+  github: RepoVariableClient | undefined,
+  name: string,
+  value: string,
+  actionCore: Pick<CoreLike, 'warning'>
+): Promise<void> {
+  if (!github || !value) {
+    return;
+  }
+
+  try {
+    await github.setRepositoryVariable(name, value);
+  } catch (err) {
+    actionCore.warning(
+      `Failed to persist ${name}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+async function writeVariable(
+  github: RepoVariableClient | undefined,
+  projectName: string,
+  baseName: string,
+  value: string,
+  actionCore: Pick<CoreLike, 'warning'>
+): Promise<void> {
+  if (!github || !value) {
+    return;
+  }
+
+  await persistVariable(github, varName(projectName, baseName), value, actionCore);
+  await persistVariable(github, `POSTMAN_${baseName}`, value, actionCore);
+}
+
 async function persistBootstrapRepositoryVariables(
-  github: Pick<GitHubApiClient, 'setRepositoryVariable'>,
+  github: RepoVariableClient,
+  projectName: string,
   outputs: PlannedOutputs,
   systemEnvMap: Record<string, string>,
   environments: string[],
-  lintSummary: BootstrapRepositoryVariables
+  lintSummary: BootstrapRepositoryVariables,
+  actionCore: Pick<CoreLike, 'warning'>
 ): Promise<void> {
-  await github.setRepositoryVariable(
+  await persistVariable(
+    github,
     'LINT_WARNINGS',
-    String(lintSummary.lintWarnings)
+    String(lintSummary.lintWarnings),
+    actionCore
   );
-  await github.setRepositoryVariable('LINT_ERRORS', String(lintSummary.lintErrors));
-  await github.setRepositoryVariable('POSTMAN_WORKSPACE_ID', outputs['workspace-id']);
-  await github.setRepositoryVariable('POSTMAN_SPEC_UID', outputs['spec-id']);
-  await github.setRepositoryVariable(
-    'POSTMAN_BASELINE_COLLECTION_UID',
-    outputs['baseline-collection-id']
+  await persistVariable(
+    github,
+    'LINT_ERRORS',
+    String(lintSummary.lintErrors),
+    actionCore
   );
-  await github.setRepositoryVariable(
-    'POSTMAN_SMOKE_COLLECTION_UID',
-    outputs['smoke-collection-id']
+  await writeVariable(
+    github,
+    projectName,
+    'WORKSPACE_ID',
+    outputs['workspace-id'],
+    actionCore
   );
-  await github.setRepositoryVariable(
-    'POSTMAN_CONTRACT_COLLECTION_UID',
-    outputs['contract-collection-id']
+  await writeVariable(github, projectName, 'SPEC_UID', outputs['spec-id'], actionCore);
+  await writeVariable(
+    github,
+    projectName,
+    'BASELINE_COLLECTION_UID',
+    outputs['baseline-collection-id'],
+    actionCore
+  );
+  await writeVariable(
+    github,
+    projectName,
+    'SMOKE_COLLECTION_UID',
+    outputs['smoke-collection-id'],
+    actionCore
+  );
+  await writeVariable(
+    github,
+    projectName,
+    'CONTRACT_COLLECTION_UID',
+    outputs['contract-collection-id'],
+    actionCore
   );
 
   for (const envName of environments) {
@@ -549,9 +659,12 @@ async function persistBootstrapRepositoryVariables(
     if (!systemEnvId) {
       continue;
     }
-    await github.setRepositoryVariable(
-      `POSTMAN_SYSTEM_ENV_${envName.toUpperCase()}`,
-      systemEnvId
+    await writeVariable(
+      github,
+      projectName,
+      `SYSTEM_ENV_${envName.toUpperCase()}`,
+      systemEnvId,
+      actionCore
     );
   }
 }
@@ -581,7 +694,11 @@ export async function runBootstrap(
   let repoWorkspaceId: string | undefined;
   let workspaceId = explicitWorkspaceId;
   if (!workspaceId && dependencies.github) {
-    repoWorkspaceId = await dependencies.github.getRepositoryVariable('POSTMAN_WORKSPACE_ID').catch(() => undefined) || undefined;
+    repoWorkspaceId = await readVariable(
+      dependencies.github,
+      inputs.projectName,
+      'WORKSPACE_ID'
+    );
     workspaceId = repoWorkspaceId;
   }
 
@@ -633,6 +750,13 @@ export async function runBootstrap(
   outputs['workspace-id'] = workspaceId || '';
   outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
+  await writeVariable(
+    dependencies.github,
+    inputs.projectName,
+    'WORKSPACE_ID',
+    outputs['workspace-id'],
+    dependencies.core
+  );
 
 
   if (inputs.domain && dependencies.internalIntegration) {
@@ -697,7 +821,7 @@ export async function runBootstrap(
 
   let specId = inputs.specId;
   if (!specId && dependencies.github) {
-    specId = await dependencies.github.getRepositoryVariable('POSTMAN_SPEC_UID').catch(() => undefined) || undefined;
+    specId = await readVariable(dependencies.github, inputs.projectName, 'SPEC_UID');
   }
 
   let baselineCollectionId = inputs.baselineCollectionId;
@@ -706,24 +830,34 @@ export async function runBootstrap(
 
   if (dependencies.github) {
     if (!baselineCollectionId) {
-      baselineCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_BASELINE_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+      baselineCollectionId = await readVariable(
+        dependencies.github,
+        inputs.projectName,
+        'BASELINE_COLLECTION_UID'
+      );
     }
     if (!smokeCollectionId) {
-      smokeCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_SMOKE_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+      smokeCollectionId = await readVariable(
+        dependencies.github,
+        inputs.projectName,
+        'SMOKE_COLLECTION_UID'
+      );
     }
     if (!contractCollectionId) {
-      contractCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_CONTRACT_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+      contractCollectionId = await readVariable(
+        dependencies.github,
+        inputs.projectName,
+        'CONTRACT_COLLECTION_UID'
+      );
     }
   }
+
+  if (specId) {
+    dependencies.core.info(`Updating existing spec ${specId} from ${inputs.specUrl}`);
+  }
+
+  const isSpecUpdate = Boolean(specId);
+  let previousSpecContent: string | undefined;
 
   const specContent = await runGroup(
     dependencies.core,
@@ -733,7 +867,9 @@ export async function runBootstrap(
       const document = normalizeSpecDocument(fetched, (msg) =>
         dependencies.core.warning(msg)
       );
+      validateSpecStructure(document);
       if (specId) {
+        previousSpecContent = await dependencies.postman.getSpecContent(specId);
         await dependencies.postman.updateSpec(specId, document, workspaceId);
       } else {
         specId = await dependencies.postman.uploadSpec(
@@ -748,6 +884,13 @@ export async function runBootstrap(
   );
 
   void specContent;
+  await writeVariable(
+    dependencies.github,
+    inputs.projectName,
+    'SPEC_UID',
+    outputs['spec-id'],
+    dependencies.core
+  );
 
   const lintSummary = await runGroup(
     dependencies.core,
@@ -762,6 +905,17 @@ export async function runBootstrap(
   });
 
   if (lintSummary.errors > 0) {
+    if (isSpecUpdate && specId && previousSpecContent !== undefined) {
+      const restoringSpecId = specId;
+      const previous = previousSpecContent;
+      await runGroup(
+        dependencies.core,
+        'Restore Previous Spec Content',
+        async () => {
+          await dependencies.postman.updateSpec(restoringSpecId, previous, workspaceId);
+        }
+      );
+    }
     lintSummary.violations
       .filter((entry) => entry.severity === 'ERROR')
       .forEach((entry) => {
@@ -797,6 +951,13 @@ export async function runBootstrap(
           `Using existing baseline collection: ${outputs['baseline-collection-id']}`
         );
       }
+      await writeVariable(
+        dependencies.github,
+        inputs.projectName,
+        'BASELINE_COLLECTION_UID',
+        outputs['baseline-collection-id'],
+        dependencies.core
+      );
 
       if (!outputs['smoke-collection-id']) {
         outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
@@ -809,6 +970,13 @@ export async function runBootstrap(
           `Using existing smoke collection: ${outputs['smoke-collection-id']}`
         );
       }
+      await writeVariable(
+        dependencies.github,
+        inputs.projectName,
+        'SMOKE_COLLECTION_UID',
+        outputs['smoke-collection-id'],
+        dependencies.core
+      );
 
       if (!outputs['contract-collection-id']) {
         outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
@@ -821,6 +989,13 @@ export async function runBootstrap(
           `Using existing contract collection: ${outputs['contract-collection-id']}`
         );
       }
+      await writeVariable(
+        dependencies.github,
+        inputs.projectName,
+        'CONTRACT_COLLECTION_UID',
+        outputs['contract-collection-id'],
+        dependencies.core
+      );
     }
   );
 
@@ -863,19 +1038,22 @@ export async function runBootstrap(
   );
 
   if (dependencies.github) {
+    const github = dependencies.github;
     await runGroup(
       dependencies.core,
       'Store Postman UIDs as Repo Variables',
       async () => {
         await persistBootstrapRepositoryVariables(
-          dependencies.github as Pick<GitHubApiClient, 'setRepositoryVariable'>,
+          github,
+          inputs.projectName,
           outputs,
           systemEnvMap,
           environments,
           {
             lintErrors: lintSummary.errors,
             lintWarnings: lintSummary.warnings
-          }
+          },
+          dependencies.core
         );
       }
     );

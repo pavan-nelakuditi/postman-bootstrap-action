@@ -88,4 +88,28 @@ describe('PostmanAssetsClient', () => {
       })
     );
   });
+
+  it('returns existing spec content when available', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ content: 'openapi: 3.1.0' })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.getSpecContent('spec-123')).resolves.toBe('openapi: 3.1.0');
+  });
+
+  it('returns undefined when fetching existing spec content fails', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('not found', { status: 404 })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.getSpecContent('spec-123')).resolves.toBeUndefined();
+  });
 });

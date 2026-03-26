@@ -4,39 +4,7 @@ import {
   chooseCanonicalWorkspace,
   resolveCanonicalWorkspaceSelection
 } from '../src/lib/postman/workspace-selection.js';
-import { normalizeGitHubRepoUrl, normalizeGitRepoUrl } from '../src/lib/postman/postman-assets-client.js';
-
-describe('normalizeGitHubRepoUrl (backward-compat alias)', () => {
-  it('returns empty string for empty input', () => {
-    expect(normalizeGitHubRepoUrl('')).toBe('');
-    expect(normalizeGitHubRepoUrl(null)).toBe('');
-    expect(normalizeGitHubRepoUrl(undefined)).toBe('');
-  });
-
-  it('normalizes HTTPS GitHub URLs to lowercase owner/repo', () => {
-    expect(normalizeGitHubRepoUrl('https://github.com/Postman-CS/my-repo')).toBe(
-      'https://github.com/postman-cs/my-repo'
-    );
-  });
-
-  it('strips trailing .git suffix', () => {
-    expect(normalizeGitHubRepoUrl('https://github.com/postman-cs/my-repo.git')).toBe(
-      'https://github.com/postman-cs/my-repo'
-    );
-  });
-
-  it('strips trailing slashes', () => {
-    expect(normalizeGitHubRepoUrl('https://github.com/postman-cs/my-repo/')).toBe(
-      'https://github.com/postman-cs/my-repo'
-    );
-  });
-
-  it('converts SSH git@ URLs to HTTPS', () => {
-    expect(normalizeGitHubRepoUrl('git@github.com:postman-cs/my-repo.git')).toBe(
-      'https://github.com/postman-cs/my-repo'
-    );
-  });
-});
+import { normalizeGitRepoUrl } from '../src/lib/postman/postman-assets-client.js';
 
 describe('normalizeGitRepoUrl', () => {
   it('returns empty string for empty input', () => {
