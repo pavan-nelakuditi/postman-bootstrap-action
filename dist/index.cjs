@@ -28684,7 +28684,6 @@ var index_exports = {};
 __export(index_exports, {
   createBootstrapDependencies: () => createBootstrapDependencies,
   createPlannedOutputs: () => createPlannedOutputs,
-  extractRepositorySlug: () => extractRepositorySlug,
   getInput: () => getInput,
   lintSpecViaCli: () => lintSpecViaCli,
   normalizeSpecDocument: () => normalizeSpecDocument,
@@ -28741,11 +28740,6 @@ var openAlphaActionContract = {
       description: "Optional release label. When omitted for versioned sync, the action derives one from GitHub ref metadata.",
       required: false
     },
-    "set-as-current": {
-      description: "Whether the resolved assets should become the current/default repo variable pointers.",
-      required: false,
-      default: "true"
-    },
     "project-name": {
       description: "Service project name.",
       required: true
@@ -28774,16 +28768,6 @@ var openAlphaActionContract = {
       description: "HTTPS URL to the OpenAPI document.",
       required: true
     },
-    "environments-json": {
-      description: "JSON array of environment slugs to preserve in bootstrap outputs.",
-      required: false,
-      default: '["prod"]'
-    },
-    "system-env-map-json": {
-      description: "JSON map of environment slug to system environment id.",
-      required: false,
-      default: "{}"
-    },
     "governance-mapping-json": {
       description: "JSON map of business domain to governance group name.",
       required: false,
@@ -28796,19 +28780,6 @@ var openAlphaActionContract = {
     "postman-access-token": {
       description: "Postman access token used for governance and workspace mutations.",
       required: false
-    },
-    "github-token": {
-      description: "GitHub token for repository variable persistence.",
-      required: false
-    },
-    "gh-fallback-token": {
-      description: "Fallback token for repository variable APIs.",
-      required: false
-    },
-    "github-auth-mode": {
-      description: "GitHub auth mode for repository variable APIs.",
-      required: false,
-      default: "github_token_first"
     },
     "integration-backend": {
       description: "Integration backend for downstream workspace connectivity.",
@@ -28844,9 +28815,6 @@ var openAlphaActionContract = {
     },
     "lint-summary-json": {
       description: "JSON summary of lint errors and warnings."
-    },
-    "releases-json": {
-      description: "JSON-serialized releases manifest for repo-sync to persist as .postman/releases.yaml."
     }
   },
   retainedBehavior: [
@@ -28860,7 +28828,6 @@ var openAlphaActionContract = {
     "baseline, smoke, and contract collection generation",
     "collection refresh and versioning policies",
     "collection tagging",
-    "GitHub repository variable persistence for downstream sync steps",
     "workspace, spec, and collection outputs"
   ],
   removedBehavior: [
@@ -28949,189 +28916,6 @@ function sanitizeHeaders(headers, secretValues) {
     sanitized[normalizedName] = SENSITIVE_HEADER_NAMES.has(normalizedName) ? REDACTED : redactSecrets(value, secretValues);
   }
   return sanitized;
-}
-
-// src/lib/github/github-api-client.ts
-function buildErrorMessage(method, path, response, body, masker) {
-  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-  const sanitizedBody = masker(body || "");
-  return sanitizedBody ? masker(`${method} ${path} failed with ${status} - ${sanitizedBody}`) : masker(`${method} ${path} failed with ${status} - [REDACTED]`);
-}
-var GitHubApiClient = class {
-  apiBase;
-  authMode;
-  appToken;
-  fallbackToken;
-  fetchImpl;
-  owner;
-  repo;
-  repository;
-  secretMasker;
-  token;
-  constructor(options) {
-    this.apiBase = String(options.apiBase || "https://api.github.com").replace(
-      /\/+$/,
-      ""
-    );
-    this.appToken = String(options.appToken || "").trim();
-    this.authMode = options.authMode || "github_token_first";
-    this.fallbackToken = String(options.fallbackToken || "").trim();
-    this.fetchImpl = options.fetch ?? fetch;
-    this.repository = options.repository;
-    const [owner, repo] = options.repository.split("/");
-    this.owner = owner;
-    this.repo = repo;
-    this.token = String(options.token || "").trim();
-    this.secretMasker = options.secretMasker ?? createSecretMasker([this.token, this.fallbackToken, this.appToken]);
-  }
-  getTokenOrder() {
-    const ordered = [];
-    if (this.authMode === "app_token") {
-      if (this.appToken) ordered.push(this.appToken);
-      if (this.token && this.token !== this.appToken) ordered.push(this.token);
-      if (this.fallbackToken && this.fallbackToken !== this.appToken && this.fallbackToken !== this.token) {
-        ordered.push(this.fallbackToken);
-      }
-      return ordered;
-    }
-    if (this.authMode === "fallback_pat_first") {
-      if (this.fallbackToken) ordered.push(this.fallbackToken);
-      if (this.token && this.token !== this.fallbackToken) ordered.push(this.token);
-      return ordered;
-    }
-    if (this.token) ordered.push(this.token);
-    if (this.fallbackToken && this.fallbackToken !== this.token) {
-      ordered.push(this.fallbackToken);
-    }
-    return ordered;
-  }
-  isVariablesEndpoint(path) {
-    return path.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
-  }
-  canUseFallback(path) {
-    return this.isVariablesEndpoint(path) || path.includes(`/repos/${this.owner}/${this.repo}/contents`) || path.includes("/dispatches");
-  }
-  rateLimitDelayMs(response, attempt) {
-    const retryAfter = Number(response.headers.get("retry-after") || "");
-    if (Number.isFinite(retryAfter) && retryAfter > 0) {
-      return Math.min(retryAfter * 1e3, 12e4);
-    }
-    const resetAtSeconds = Number(response.headers.get("x-ratelimit-reset") || "");
-    if (Number.isFinite(resetAtSeconds) && resetAtSeconds > 0) {
-      const delta = resetAtSeconds * 1e3 - Date.now();
-      if (delta > 0) {
-        return Math.min(delta + 250, 12e4);
-      }
-    }
-    const base = Math.min(5e3 * Math.pow(2, attempt), 12e4);
-    const jitter = Math.floor(Math.random() * 250);
-    return Math.min(base + jitter, 12e4);
-  }
-  async requestWithToken(path, init, token) {
-    const MAX_RETRIES = 5;
-    const normalizedToken = String(token || "").trim();
-    if (!normalizedToken) {
-      throw new Error(`Missing GitHub auth token for request ${path}`);
-    }
-    for (let attempt = 0; ; attempt++) {
-      const response = await this.fetchImpl(`${this.apiBase}${path}`, {
-        ...init,
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${normalizedToken}`,
-          "Content-Type": "application/json",
-          ...init.headers || {}
-        }
-      });
-      if (attempt < MAX_RETRIES && (response.status === 403 || response.status === 429)) {
-        const body = await response.clone().text().catch(() => "");
-        if (isRateLimitedResponse(response, body)) {
-          const delay = this.rateLimitDelayMs(response, attempt);
-          console.log(
-            `GitHub API rate limited, retrying in ${Math.ceil(delay / 1e3)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`
-          );
-          await new Promise((r) => setTimeout(r, delay));
-          continue;
-        }
-      }
-      return response;
-    }
-  }
-  async request(path, init = {}) {
-    const orderedTokens = this.getTokenOrder();
-    if (orderedTokens.length === 0) {
-      throw new Error("No GitHub auth token configured");
-    }
-    const first = await this.requestWithToken(path, init, orderedTokens[0]);
-    if (orderedTokens.length < 2 || !this.canUseFallback(path)) {
-      return first;
-    }
-    const isVariableGet404 = first.status === 404 && (!init.method || init.method === "GET") && this.isVariablesEndpoint(path);
-    if (first.status !== 403 && !isVariableGet404) {
-      return first;
-    }
-    return this.requestWithToken(path, init, orderedTokens[1]);
-  }
-  async setRepositoryVariable(name, value) {
-    if (!value) {
-      throw new Error(`Repo variable ${name} is empty`);
-    }
-    const path = `/repos/${this.repository}/actions/variables`;
-    const body = JSON.stringify({ name, value: String(value) });
-    const createResponse = await this.request(path, {
-      method: "POST",
-      body
-    });
-    if (createResponse.ok || createResponse.status === 201) {
-      return;
-    }
-    if (createResponse.status === 409 || createResponse.status === 422) {
-      const updatePath = `/repos/${this.repository}/actions/variables/${name}`;
-      const updateResponse = await this.request(updatePath, {
-        method: "PATCH",
-        body
-      });
-      if (updateResponse.ok) {
-        return;
-      }
-      const text2 = await updateResponse.text().catch(() => "");
-      throw new Error(
-        buildErrorMessage("PATCH", updatePath, updateResponse, text2, this.secretMasker)
-      );
-    }
-    const text = await createResponse.text().catch(() => "");
-    throw new Error(
-      buildErrorMessage("POST", path, createResponse, text, this.secretMasker)
-    );
-  }
-  async getRepositoryVariable(name) {
-    const path = `/repos/${this.repository}/actions/variables/${name}`;
-    const response = await this.request(path, {
-      method: "GET"
-    });
-    if (response.status === 404) {
-      return "";
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(
-        buildErrorMessage("GET", path, response, text, this.secretMasker)
-      );
-    }
-    const data = await response.json();
-    return String(data.value || "");
-  }
-};
-function isRateLimitedResponse(response, body) {
-  if (response.status !== 403 && response.status !== 429) return false;
-  const remaining = response.headers.get("x-ratelimit-remaining");
-  const retryAfter = response.headers.get("retry-after");
-  if (remaining === "0") return true;
-  if (retryAfter) return true;
-  const message = body.toLowerCase();
-  if (message.includes("secondary rate limit")) return true;
-  if (message.includes("api rate limit exceeded")) return true;
-  return response.status === 429;
 }
 
 // src/lib/http-error.ts
@@ -30208,39 +29992,6 @@ function requireInput(actionCore, name) {
 function optionalInput(actionCore, name) {
   return normalizeInputValue(actionCore.getInput(name));
 }
-function parseJsonValue(raw, fallback, inputName) {
-  try {
-    return JSON.parse(raw || JSON.stringify(fallback)) ?? fallback;
-  } catch (error) {
-    throw new Error(
-      `Invalid JSON for ${inputName}: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-function asStringArray(value, inputName) {
-  if (!Array.isArray(value)) {
-    throw new Error(`${inputName} must be a JSON array`);
-  }
-  return value.map((entry) => String(entry));
-}
-function asStringMap(value, inputName) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${inputName} must be a JSON object`);
-  }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
-      key,
-      String(entry)
-    ])
-  );
-}
-function parseBooleanInput(value, defaultValue) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return defaultValue;
-  if (["true", "1", "yes", "on"].includes(normalized)) return true;
-  if (["false", "0", "no", "off"].includes(normalized)) return false;
-  return defaultValue;
-}
 function parseCollectionSyncMode(value) {
   if (value === "reuse" || value === "version") {
     return value;
@@ -30288,7 +30039,6 @@ function resolveInputs(env = process.env) {
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
-    setAsCurrent: parseBooleanInput(getInput("set-as-current", env), true),
     domain: getInput("domain", env),
     domainCode: getInput("domain-code", env),
     requesterEmail: getInput("requester-email", env),
@@ -30297,14 +30047,9 @@ function resolveInputs(env = process.env) {
     teamId: getInput("team-id", env) || env.POSTMAN_TEAM_ID || "",
     repoUrl: repoContext.repoUrl || "",
     specUrl,
-    environmentsJson: getInput("environments-json", env) ?? openAlphaActionContract.inputs["environments-json"].default ?? '["prod"]',
-    systemEnvMapJson: getInput("system-env-map-json", env) ?? openAlphaActionContract.inputs["system-env-map-json"].default ?? "{}",
     governanceMappingJson: getInput("governance-mapping-json", env) ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}",
     postmanApiKey: getInput("postman-api-key", env) ?? "",
     postmanAccessToken: getInput("postman-access-token", env),
-    githubToken: getInput("github-token", env),
-    ghFallbackToken: getInput("gh-fallback-token", env),
-    githubAuthMode: getInput("github-auth-mode", env) ?? openAlphaActionContract.inputs["github-auth-mode"].default ?? "github_token_first",
     integrationBackend,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
@@ -30332,8 +30077,7 @@ function createPlannedOutputs(inputs) {
       total: 0,
       violations: [],
       warnings: 0
-    }),
-    "releases-json": ""
+    })
   };
 }
 function readActionInputs(actionCore) {
@@ -30341,12 +30085,8 @@ function readActionInputs(actionCore) {
   const specUrl = requireInput(actionCore, "spec-url");
   const postmanApiKey = requireInput(actionCore, "postman-api-key");
   const postmanAccessToken = optionalInput(actionCore, "postman-access-token");
-  const githubToken = optionalInput(actionCore, "github-token");
-  const ghFallbackToken = optionalInput(actionCore, "gh-fallback-token");
   actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
-  if (githubToken) actionCore.setSecret(githubToken);
-  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
   const inputs = resolveInputs({
     ...process.env,
     INPUT_PROJECT_NAME: projectName,
@@ -30358,7 +30098,6 @@ function readActionInputs(actionCore) {
     INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? openAlphaActionContract.inputs["collection-sync-mode"].default,
     INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? openAlphaActionContract.inputs["spec-sync-mode"].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, "release-label"),
-    INPUT_SET_AS_CURRENT: optionalInput(actionCore, "set-as-current") ?? openAlphaActionContract.inputs["set-as-current"].default,
     INPUT_DOMAIN: optionalInput(actionCore, "domain"),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, "domain-code"),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, "requester-email"),
@@ -30370,14 +30109,9 @@ function readActionInputs(actionCore) {
     INPUT_TEAM_ID: optionalInput(actionCore, "postman-team-id") || process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, "repo-url"),
     INPUT_SPEC_URL: specUrl,
-    INPUT_ENVIRONMENTS_JSON: optionalInput(actionCore, "environments-json") ?? openAlphaActionContract.inputs["environments-json"].default,
-    INPUT_SYSTEM_ENV_MAP_JSON: optionalInput(actionCore, "system-env-map-json") ?? openAlphaActionContract.inputs["system-env-map-json"].default,
     INPUT_GOVERNANCE_MAPPING_JSON: optionalInput(actionCore, "governance-mapping-json") ?? openAlphaActionContract.inputs["governance-mapping-json"].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
-    INPUT_GITHUB_TOKEN: githubToken,
-    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken,
-    INPUT_GITHUB_AUTH_MODE: optionalInput(actionCore, "github-auth-mode") ?? openAlphaActionContract.inputs["github-auth-mode"].default,
     INPUT_INTEGRATION_BACKEND: optionalInput(actionCore, "integration-backend") ?? openAlphaActionContract.inputs["integration-backend"].default
   });
   return inputs;
@@ -30467,50 +30201,31 @@ function deriveReleaseLabel(inputs) {
   }
   return normalizeReleaseLabel(inputs.githubRefName) ?? normalizeReleaseLabel(inputs.githubHeadRef) ?? normalizeReleaseLabel(inputs.githubRef);
 }
-function parseReleasesManifest(raw) {
-  if (!raw?.trim()) {
-    return { releases: {} };
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      current: typeof parsed.current === "string" && parsed.current ? parsed.current : void 0,
-      releases: parsed.releases && typeof parsed.releases === "object" ? parsed.releases : {}
-    };
-  } catch {
-    return { releases: {} };
-  }
-}
 function createAssetProjectName(inputs, releaseLabel) {
   if (!releaseLabel) {
     return inputs.projectName;
   }
   return `${inputs.projectName} ${releaseLabel}`;
 }
-function createReleaseEntry(releaseLabel, outputs, inputs) {
-  return {
-    specId: outputs["spec-id"],
-    collections: {
-      baseline: outputs["baseline-collection-id"],
-      smoke: outputs["smoke-collection-id"],
-      contract: outputs["contract-collection-id"]
-    },
-    source: {
-      ref: normalizeReleaseLabel(inputs.githubRefName) ?? normalizeReleaseLabel(inputs.githubRef) ?? releaseLabel,
-      sha: inputs.githubSha || void 0
-    }
-  };
-}
-function applyReleaseEntry(manifest, releaseLabel, outputs, inputs, setAsCurrent) {
-  manifest.releases[releaseLabel] = createReleaseEntry(
-    releaseLabel,
-    outputs,
-    inputs
-  );
-  if (setAsCurrent) {
-    manifest.current = releaseLabel;
+function readResourcesState() {
+  try {
+    return (0, import_yaml.parse)((0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8"));
+  } catch {
+    return null;
   }
-  return manifest;
+}
+function getFirstCloudResourceId(map) {
+  if (!map) {
+    return void 0;
+  }
+  return Object.values(map)[0];
+}
+function findCloudResourceId(map, matcher) {
+  if (!map) {
+    return void 0;
+  }
+  const match = Object.entries(map).find(([filePath]) => matcher(filePath));
+  return match?.[1];
 }
 var SPEC_SUMMARY_MAX_LEN = 200;
 var SPEC_HTTP_METHODS = /* @__PURE__ */ new Set([
@@ -30600,143 +30315,8 @@ function validateSpecStructure(content) {
     throw new Error('Spec is missing "openapi" or "swagger" version field');
   }
 }
-function varName(projectName, baseName) {
-  const slug = projectName.toUpperCase().replace(/[^A-Z0-9]/g, "_");
-  return `POSTMAN_${slug}_${baseName}`;
-}
-async function getRepositoryVariableSafe(github, name) {
-  if (!github) {
-    return void 0;
-  }
-  const value = await github.getRepositoryVariable(name).catch(() => void 0);
-  return value || void 0;
-}
-async function readVariable(github, projectName, baseName) {
-  if (!github) {
-    return void 0;
-  }
-  const namespaced = await getRepositoryVariableSafe(
-    github,
-    varName(projectName, baseName)
-  );
-  if (namespaced) {
-    return namespaced;
-  }
-  const legacy = await getRepositoryVariableSafe(github, `POSTMAN_${baseName}`);
-  return legacy || void 0;
-}
-async function persistVariable(github, name, value, actionCore) {
-  if (!github || !value) {
-    return;
-  }
-  try {
-    await github.setRepositoryVariable(name, value);
-  } catch (err) {
-    actionCore.warning(
-      `Failed to persist ${name}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-}
-async function writeVariable(github, projectName, baseName, value, actionCore) {
-  if (!github || !value) {
-    return;
-  }
-  await persistVariable(github, varName(projectName, baseName), value, actionCore);
-  await persistVariable(github, `POSTMAN_${baseName}`, value, actionCore);
-}
-async function persistBootstrapRepositoryVariables(github, projectName, outputs, systemEnvMap, environments, lintSummary, actionCore, options) {
-  await persistVariable(
-    github,
-    "LINT_WARNINGS",
-    String(lintSummary.lintWarnings),
-    actionCore
-  );
-  await persistVariable(
-    github,
-    "LINT_ERRORS",
-    String(lintSummary.lintErrors),
-    actionCore
-  );
-  if (options.setAsCurrent) {
-    await writeVariable(
-      github,
-      projectName,
-      "WORKSPACE_ID",
-      outputs["workspace-id"],
-      actionCore
-    );
-    await writeVariable(github, projectName, "SPEC_UID", outputs["spec-id"], actionCore);
-    await writeVariable(
-      github,
-      projectName,
-      "BASELINE_COLLECTION_UID",
-      outputs["baseline-collection-id"],
-      actionCore
-    );
-    await writeVariable(
-      github,
-      projectName,
-      "SMOKE_COLLECTION_UID",
-      outputs["smoke-collection-id"],
-      actionCore
-    );
-    await writeVariable(
-      github,
-      projectName,
-      "CONTRACT_COLLECTION_UID",
-      outputs["contract-collection-id"],
-      actionCore
-    );
-  }
-  if (options.releaseLabel) {
-    const manifest = applyReleaseEntry(
-      options.releasesManifest ?? { releases: {} },
-      options.releaseLabel,
-      outputs,
-      options.inputs,
-      options.setAsCurrent
-    );
-    if (options.setAsCurrent) {
-      await writeVariable(
-        github,
-        projectName,
-        "RELEASE_LABEL",
-        options.releaseLabel,
-        actionCore
-      );
-    }
-    await writeVariable(
-      github,
-      projectName,
-      "RELEASES_JSON",
-      JSON.stringify(manifest),
-      actionCore
-    );
-  }
-  for (const envName of environments) {
-    const systemEnvId = systemEnvMap[envName];
-    if (!systemEnvId) {
-      continue;
-    }
-    await writeVariable(
-      github,
-      projectName,
-      `SYSTEM_ENV_${envName.toUpperCase()}`,
-      systemEnvId,
-      actionCore
-    );
-  }
-}
 async function runBootstrap(inputs, dependencies) {
   const outputs = createPlannedOutputs(inputs);
-  const environments = asStringArray(
-    parseJsonValue(inputs.environmentsJson, ["prod"], "environments-json"),
-    "environments-json"
-  );
-  const systemEnvMap = asStringMap(
-    parseJsonValue(inputs.systemEnvMapJson, {}, "system-env-map-json"),
-    "system-env-map-json"
-  );
   const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
   if (requiresReleaseLabel && !releaseLabel) {
@@ -30744,35 +30324,19 @@ async function runBootstrap(inputs, dependencies) {
       "Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata"
     );
   }
-  const shouldSetCurrentPointers = inputs.collectionSyncMode === "refresh" ? true : inputs.setAsCurrent;
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
   await runGroup(dependencies.core, "Install Postman CLI", async () => {
     await ensurePostmanCli(dependencies, inputs.postmanApiKey);
   });
+  const resourcesState = readResourcesState();
   let explicitWorkspaceId = inputs.workspaceId;
-  if (!explicitWorkspaceId) {
-    try {
-      const raw = (0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8");
-      const config = (0, import_yaml.parse)(raw);
-      const wsId = config?.workspace?.id;
-      if (wsId) {
-        explicitWorkspaceId = wsId;
-        dependencies.core.info("Resolved workspace-id from .postman/resources.yaml");
-      }
-    } catch {
-    }
+  if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
+    explicitWorkspaceId = resourcesState.workspace.id;
+    dependencies.core.info("Resolved workspace-id from .postman/resources.yaml");
   }
-  let repoWorkspaceId;
+  const repoWorkspaceId = explicitWorkspaceId;
   let workspaceId = explicitWorkspaceId;
-  if (!workspaceId && dependencies.github) {
-    repoWorkspaceId = await readVariable(
-      dependencies.github,
-      inputs.projectName,
-      "WORKSPACE_ID"
-    );
-    workspaceId = repoWorkspaceId;
-  }
   let teamId = inputs.teamId || "";
   if (!teamId) {
     teamId = await dependencies.postman.getAutoDerivedTeamId() || "";
@@ -30865,13 +30429,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
   outputs["workspace-id"] = workspaceId || "";
   outputs["workspace-url"] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs["workspace-name"] = workspaceName;
-  await writeVariable(
-    shouldSetCurrentPointers ? dependencies.github : void 0,
-    inputs.projectName,
-    "WORKSPACE_ID",
-    outputs["workspace-id"],
-    dependencies.core
-  );
   if (inputs.domain && dependencies.internalIntegration) {
     await runGroup(
       dependencies.core,
@@ -30925,111 +30482,44 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       }
     );
   }
-  let releasesManifest = { releases: {} };
-  if (requiresReleaseLabel) {
-    let fromFile = false;
-    try {
-      const raw = (0, import_node_fs.readFileSync)(".postman/releases.yaml", "utf8");
-      const parsed = (0, import_yaml.parse)(raw);
-      if (parsed && typeof parsed === "object") {
-        releasesManifest = parseReleasesManifest(JSON.stringify(parsed));
-        fromFile = true;
-        dependencies.core.info("Read releases manifest from .postman/releases.yaml");
-      }
-    } catch {
-    }
-    if (!fromFile) {
-      const rawManifest = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        "RELEASES_JSON"
-      );
-      releasesManifest = parseReleasesManifest(rawManifest);
-    }
-  }
-  const releaseEntry = releaseLabel ? releasesManifest.releases[releaseLabel] : void 0;
   let specId = inputs.specId;
-  if (!specId && inputs.specSyncMode === "version") {
-    specId = releaseEntry?.specId;
-  }
-  if (!specId && inputs.specSyncMode === "update") {
-    try {
-      const raw = (0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8");
-      const config = (0, import_yaml.parse)(raw);
-      const cloudSpecs = config?.cloudResources?.specs;
-      if (cloudSpecs) {
-        const firstValue = Object.values(cloudSpecs)[0];
-        if (firstValue) {
-          specId = firstValue;
-          dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
-        }
-      }
-    } catch {
+  if (!specId) {
+    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
+    if (specId) {
+      dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
     }
-  }
-  if (!specId && dependencies.github && inputs.specSyncMode === "update") {
-    specId = await readVariable(dependencies.github, inputs.projectName, "SPEC_UID");
   }
   let baselineCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.baselineCollectionId;
   let smokeCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.smokeCollectionId;
   let contractCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.contractCollectionId;
-  if (inputs.collectionSyncMode === "version" && releaseEntry) {
-    baselineCollectionId = baselineCollectionId || releaseEntry.collections.baseline;
-    smokeCollectionId = smokeCollectionId || releaseEntry.collections.smoke;
-    contractCollectionId = contractCollectionId || releaseEntry.collections.contract;
-  }
-  if (inputs.collectionSyncMode === "reuse") {
-    try {
-      const raw = (0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8");
-      const config = (0, import_yaml.parse)(raw);
-      const cloudCols = config?.cloudResources?.collections;
-      if (cloudCols) {
-        if (!baselineCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes("[Baseline]"));
-          if (match) {
-            baselineCollectionId = match[1];
-            dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
-          }
-        }
-        if (!smokeCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes("[Smoke]"));
-          if (match) {
-            smokeCollectionId = match[1];
-            dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
-          }
-        }
-        if (!contractCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes("[Contract]"));
-          if (match) {
-            contractCollectionId = match[1];
-            dependencies.core.info("Resolved contract-collection-id from .postman/resources.yaml");
-          }
-        }
+  if (inputs.collectionSyncMode !== "refresh") {
+    const cloudCollections = resourcesState?.cloudResources?.collections;
+    if (!baselineCollectionId) {
+      baselineCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes("[Baseline]")
+      );
+      if (baselineCollectionId) {
+        dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
       }
-    } catch {
     }
-  }
-  if (dependencies.github) {
-    if (!baselineCollectionId && inputs.collectionSyncMode === "reuse") {
-      baselineCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        "BASELINE_COLLECTION_UID"
+    if (!smokeCollectionId) {
+      smokeCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes("[Smoke]")
       );
+      if (smokeCollectionId) {
+        dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
+      }
     }
-    if (!smokeCollectionId && inputs.collectionSyncMode === "reuse") {
-      smokeCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        "SMOKE_COLLECTION_UID"
+    if (!contractCollectionId) {
+      contractCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes("[Contract]")
       );
-    }
-    if (!contractCollectionId && inputs.collectionSyncMode === "reuse") {
-      contractCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        "CONTRACT_COLLECTION_UID"
-      );
+      if (contractCollectionId) {
+        dependencies.core.info("Resolved contract-collection-id from .postman/resources.yaml");
+      }
     }
   }
   if (specId) {
@@ -31065,13 +30555,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     }
   );
   void specContent;
-  await writeVariable(
-    shouldSetCurrentPointers ? dependencies.github : void 0,
-    inputs.projectName,
-    "SPEC_UID",
-    outputs["spec-id"],
-    dependencies.core
-  );
   const lintSummary = await runGroup(
     dependencies.core,
     "Lint Spec via Postman CLI",
@@ -31109,7 +30592,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     dependencies.core,
     "Generate Collections from Spec",
     async () => {
-      const shouldReuseCollections = inputs.collectionSyncMode === "reuse" || inputs.collectionSyncMode === "version" && Boolean(baselineCollectionId && smokeCollectionId && contractCollectionId);
+      const shouldReuseCollections = inputs.collectionSyncMode !== "refresh";
       const assetProjectName = inputs.collectionSyncMode === "version" ? createAssetProjectName(inputs, releaseLabel) : inputs.projectName;
       outputs["baseline-collection-id"] = shouldReuseCollections ? baselineCollectionId || "" : "";
       outputs["smoke-collection-id"] = shouldReuseCollections ? smokeCollectionId || "" : "";
@@ -31125,13 +30608,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           `Using existing baseline collection: ${outputs["baseline-collection-id"]}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : void 0,
-        inputs.projectName,
-        "BASELINE_COLLECTION_UID",
-        outputs["baseline-collection-id"],
-        dependencies.core
-      );
       if (!outputs["smoke-collection-id"]) {
         outputs["smoke-collection-id"] = await dependencies.postman.generateCollection(
           outputs["spec-id"],
@@ -31143,13 +30619,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           `Using existing smoke collection: ${outputs["smoke-collection-id"]}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : void 0,
-        inputs.projectName,
-        "SMOKE_COLLECTION_UID",
-        outputs["smoke-collection-id"],
-        dependencies.core
-      );
       if (!outputs["contract-collection-id"]) {
         outputs["contract-collection-id"] = await dependencies.postman.generateCollection(
           outputs["spec-id"],
@@ -31161,13 +30630,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           `Using existing contract collection: ${outputs["contract-collection-id"]}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : void 0,
-        inputs.projectName,
-        "CONTRACT_COLLECTION_UID",
-        outputs["contract-collection-id"],
-        dependencies.core
-      );
     }
   );
   outputs["collections-json"] = JSON.stringify({
@@ -31205,53 +30667,6 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       ]);
     }
   );
-  if (dependencies.github) {
-    const github = dependencies.github;
-    await runGroup(
-      dependencies.core,
-      "Store Postman UIDs as Repo Variables",
-      async () => {
-        await persistBootstrapRepositoryVariables(
-          github,
-          inputs.projectName,
-          outputs,
-          systemEnvMap,
-          environments,
-          {
-            lintErrors: lintSummary.errors,
-            lintWarnings: lintSummary.warnings
-          },
-          dependencies.core,
-          {
-            setAsCurrent: shouldSetCurrentPointers,
-            releaseLabel,
-            releasesManifest,
-            inputs
-          }
-        );
-      }
-    );
-  }
-  if (releaseLabel) {
-    releasesManifest = applyReleaseEntry(
-      releasesManifest,
-      releaseLabel,
-      outputs,
-      inputs,
-      shouldSetCurrentPointers
-    );
-  }
-  if (releaseLabel && Object.keys(releasesManifest.releases).length > 0) {
-    try {
-      (0, import_node_fs.mkdirSync)(".postman", { recursive: true });
-      (0, import_node_fs.writeFileSync)(".postman/releases.yaml", (0, import_yaml.stringify)(releasesManifest, {
-        lineWidth: -1
-      }));
-    } catch (err) {
-      dependencies.core.warning(`Failed to write .postman/releases.yaml: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    outputs["releases-json"] = JSON.stringify(releasesManifest);
-  }
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);
   }
@@ -31265,9 +30680,6 @@ async function runAction(actionCore = core, actionExec = exec, actionIo = io) {
     io: actionIo,
     specFetcher: fetch
   });
-  if (!dependencies.github) {
-    actionCore.info("GitHub repository variable persistence disabled for this run");
-  }
   if (inputs.domain && !dependencies.internalIntegration) {
     actionCore.warning(
       "Skipping governance assignment because postman-access-token is not configured"
@@ -31278,22 +30690,12 @@ async function runAction(actionCore = core, actionExec = exec, actionIo = io) {
 function createBootstrapDependencies(inputs, factories) {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken,
-    inputs.githubToken,
-    inputs.ghFallbackToken
+    inputs.postmanAccessToken
   ]);
   const postman = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
     secretMasker
   });
-  const repository = extractRepositorySlug(inputs.repoUrl);
-  const github = inputs.githubToken && inputs.repoUrl && repository ? new GitHubApiClient({
-    authMode: inputs.githubAuthMode,
-    fallbackToken: inputs.ghFallbackToken,
-    repository,
-    secretMasker,
-    token: inputs.githubToken
-  }) : void 0;
   const internalIntegration = inputs.postmanAccessToken ? createInternalIntegrationAdapter({
     accessToken: inputs.postmanAccessToken,
     backend: inputs.integrationBackend,
@@ -31303,29 +30705,11 @@ function createBootstrapDependencies(inputs, factories) {
   return {
     core: factories.core,
     exec: factories.exec,
-    github,
     io: factories.io,
     internalIntegration,
     postman,
     specFetcher: factories.specFetcher ?? fetch
   };
-}
-function extractRepositorySlug(repoUrl) {
-  const normalized = normalizeInputValue(repoUrl);
-  if (!normalized) {
-    return void 0;
-  }
-  try {
-    const parsed = new URL(normalized);
-    const pathname = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-    const segments = pathname.split("/").filter(Boolean);
-    if (segments.length >= 2) {
-      return `${segments[0]}/${segments[1]}`;
-    }
-    return void 0;
-  } catch {
-    return void 0;
-  }
 }
 var currentModulePath = typeof __filename === "string" ? __filename : "";
 var entrypoint = process.argv[1];
@@ -31342,7 +30726,6 @@ if (entrypoint && currentModulePath === entrypoint) {
 0 && (module.exports = {
   createBootstrapDependencies,
   createPlannedOutputs,
-  extractRepositorySlug,
   getInput,
   lintSpecViaCli,
   normalizeSpecDocument,

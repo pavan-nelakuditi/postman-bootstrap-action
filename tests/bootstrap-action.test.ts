@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { stringify as stringifyYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -63,21 +63,15 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',
     releaseLabel: undefined,
-    setAsCurrent: true,
     domain: 'core-banking',
     domainCode: 'AF',
     requesterEmail: 'owner@example.com',
     workspaceAdminUserIds: '101,102',
     repoUrl: 'https://github.com/postman-cs/bootstrap-action-test',
     specUrl: 'https://example.test/openapi.yaml',
-    environmentsJson: '["prod","stage"]',
-    systemEnvMapJson: '{"prod":"sys-prod","stage":"sys-stage"}',
     governanceMappingJson: '{"core-banking":"Core Banking"}',
     postmanApiKey: 'pmak-test',
     postmanAccessToken: 'postman-access-token',
-    githubToken: 'github-token',
-    ghFallbackToken: 'github-fallback-token',
-    githubAuthMode: 'github_token_first',
     integrationBackend: 'bifrost',
     githubRefName: undefined,
     githubHeadRef: undefined,
@@ -114,9 +108,7 @@ describe('bootstrap action', () => {
       'project-name': 'core-payments',
       'spec-url': 'https://example.test/openapi.yaml',
       'postman-api-key': 'pmak-test',
-      'postman-access-token': 'postman-access-token',
-      'github-token': 'github-token',
-      'gh-fallback-token': 'github-fallback-token'
+      'postman-access-token': 'postman-access-token'
     });
 
     const inputs = readActionInputs(core);
@@ -124,9 +116,7 @@ describe('bootstrap action', () => {
     expect(inputs.postmanApiKey).toBe('pmak-test');
     expect(secrets).toEqual([
       'pmak-test',
-      'postman-access-token',
-      'github-token',
-      'github-fallback-token'
+      'postman-access-token'
     ]);
   });
 
@@ -160,10 +150,6 @@ describe('bootstrap action', () => {
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined)
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn().mockResolvedValue('')
-    };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response('openapi: 3.1.0', {
         status: 200
@@ -173,7 +159,6 @@ describe('bootstrap action', () => {
     const result = await runBootstrap(createInputs(), {
       core,
       exec: execStub,
-      github,
       io: ioStub,
       internalIntegration,
       postman,
@@ -192,22 +177,6 @@ describe('bootstrap action', () => {
     );
     expect(postman.addAdminsToWorkspace).toHaveBeenCalledWith('ws-123', '101,102');
     expect(order).toEqual(['[Baseline]', '[Smoke]', '[Contract]']);
-    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
-      'LINT_WARNINGS',
-      '0'
-    );
-    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
-      'LINT_ERRORS',
-      '0'
-    );
-    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
-      'POSTMAN_WORKSPACE_ID',
-      'ws-123'
-    );
-    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
-      'POSTMAN_CORE_PAYMENTS_WORKSPACE_ID',
-      'ws-123'
-    );
     expect(result).toMatchObject({
       'workspace-id': 'ws-123',
       'workspace-name': '[AF] core-payments',
@@ -393,11 +362,6 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn()
-    };
-
     const result = await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
@@ -410,7 +374,6 @@ describe('bootstrap action', () => {
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -419,7 +382,6 @@ describe('bootstrap action', () => {
       }
     );
 
-    expect(github.getRepositoryVariable).not.toHaveBeenCalled();
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
@@ -466,25 +428,18 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn().mockResolvedValue('')
-    };
-
     const result = await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
         specId: 'spec-existing',
         baselineCollectionId: 'col-baseline-existing',
         smokeCollectionId: 'col-smoke-existing',
-        contractCollectionId: 'col-contract-existing',
-        collectionSyncMode: 'refresh',
-        setAsCurrent: false
-      }),
+    contractCollectionId: 'col-contract-existing',
+    collectionSyncMode: 'refresh',
+  }),
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -499,41 +454,42 @@ describe('bootstrap action', () => {
       'smoke-collection-id': 'col-smoke-refresh',
       'contract-collection-id': 'col-contract-refresh'
     });
-    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
-      'POSTMAN_BASELINE_COLLECTION_UID',
-      'col-baseline-refresh'
-    );
   });
 
-  it('version mode creates release-scoped assets and persists a release manifest', async () => {
+  it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
-    const generatedIds = ['col-baseline-v111', 'col-smoke-v111', 'col-contract-v111'];
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn(),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
-      uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
+      uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn(async (name: string) =>
-        name.endsWith('RELEASES_JSON') ? JSON.stringify({ releases: {} }) : ''
-      )
-    };
-
+    mkdirSync('.postman', { recursive: true });
+    writeFileSync(
+      '.postman/resources.yaml',
+      stringifyYaml({
+        workspace: { id: 'ws-existing' },
+        cloudResources: {
+          specs: { '../index.yaml': 'spec-v111' },
+          collections: {
+            '../postman/collections/[Baseline] core-payments release-v1.1.1': 'col-baseline-v111',
+            '../postman/collections/[Smoke] core-payments release-v1.1.1': 'col-smoke-v111',
+            '../postman/collections/[Contract] core-payments release-v1.1.1': 'col-contract-v111'
+          }
+        }
+      })
+    );
     const result = await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
@@ -546,7 +502,6 @@ describe('bootstrap action', () => {
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -555,42 +510,20 @@ describe('bootstrap action', () => {
       }
     );
 
-    expect(postman.uploadSpec).toHaveBeenCalledWith(
-      'ws-existing',
-      'core-payments release-v1.1.1',
-      'openapi: 3.1.0'
-    );
-    expect(postman.generateCollection).toHaveBeenNthCalledWith(
-      1,
+    expect(postman.updateSpec).toHaveBeenCalledWith(
       'spec-v111',
-      'core-payments release-v1.1.1',
-      '[Baseline]'
+      'openapi: 3.1.0',
+      'ws-existing'
     );
-    const manifestCall = github.setRepositoryVariable.mock.calls.find(([name]) =>
-      String(name).endsWith('RELEASES_JSON')
-    );
-    expect(manifestCall).toBeTruthy();
-    expect(JSON.parse(String(manifestCall?.[1]))).toMatchObject({
-      current: 'release-v1.1.1',
-      releases: {
-        'release-v1.1.1': {
-          specId: 'spec-v111',
-          collections: {
-            baseline: 'col-baseline-v111',
-            smoke: 'col-smoke-v111',
-            contract: 'col-contract-v111'
-          },
-          source: {
-            ref: 'release-v1.1.1',
-            sha: 'deadbeef'
-          }
-        }
-      }
-    });
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(result['spec-id']).toBe('spec-v111');
+    expect(result['baseline-collection-id']).toBe('col-baseline-v111');
+    expect(result['smoke-collection-id']).toBe('col-smoke-v111');
+    expect(result['contract-collection-id']).toBe('col-contract-v111');
   });
 
-  it('version mode can keep existing current pointers when set-as-current is false', async () => {
+  it('version mode does not persist asset identifiers to repository variables', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -613,28 +546,17 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn(async (name: string) =>
-        name.endsWith('RELEASES_JSON')
-          ? JSON.stringify({ current: 'v1.1.0', releases: { 'v1.1.0': { collections: {} } } })
-          : ''
-      )
-    };
-
     await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
         collectionSyncMode: 'version',
         specSyncMode: 'version',
         releaseLabel: 'v1.1.1',
-        githubRefName: 'v1.1.1',
-        setAsCurrent: false
+        githubRefName: 'v1.1.1'
       }),
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -642,13 +564,6 @@ describe('bootstrap action', () => {
         )
       }
     );
-
-    const updatedCurrentCalls = github.setRepositoryVariable.mock.calls.filter(([name]) =>
-      /POSTMAN_(CORE_PAYMENTS_)?(WORKSPACE_ID|SPEC_UID|BASELINE_COLLECTION_UID|SMOKE_COLLECTION_UID|CONTRACT_COLLECTION_UID|RELEASE_LABEL)$/.test(
-        String(name)
-      )
-    );
-    expect(updatedCurrentCalls).toHaveLength(0);
   });
 
   it("version mode doesn't fall back to singleton current spec uid", async () => {
@@ -674,19 +589,6 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn(async (name: string) => {
-        if (name.endsWith('RELEASES_JSON')) {
-          return JSON.stringify({ releases: {} });
-        }
-        if (name.endsWith('SPEC_UID')) {
-          return 'spec-current';
-        }
-        return '';
-      })
-    };
-
     const result = await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
@@ -698,7 +600,6 @@ describe('bootstrap action', () => {
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -720,7 +621,7 @@ describe('bootstrap action', () => {
     expect(result['spec-id']).toBe('spec-v112');
   });
 
-  it('falls back to repository variables for reruns before creating new assets', async () => {
+  it('reuses .postman/resources.yaml for reruns before creating new assets', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -739,24 +640,25 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn(async (name: string) => {
-        const values: Record<string, string> = {
-          POSTMAN_WORKSPACE_ID: 'ws-from-vars',
-          POSTMAN_SPEC_UID: 'spec-from-vars',
-          POSTMAN_BASELINE_COLLECTION_UID: 'col-baseline-from-vars',
-          POSTMAN_SMOKE_COLLECTION_UID: 'col-smoke-from-vars',
-          POSTMAN_CONTRACT_COLLECTION_UID: 'col-contract-from-vars'
-        };
-        return values[name] ?? '';
+    mkdirSync('.postman', { recursive: true });
+    writeFileSync(
+      '.postman/resources.yaml',
+      stringifyYaml({
+        workspace: { id: 'ws-from-file' },
+        cloudResources: {
+          specs: { '../index.yaml': 'spec-from-file' },
+          collections: {
+            '../postman/collections/[Baseline] core-payments': 'col-baseline-from-file',
+            '../postman/collections/[Smoke] core-payments': 'col-smoke-from-file',
+            '../postman/collections/[Contract] core-payments': 'col-contract-from-file'
+          }
+        }
       })
-    };
+    );
 
     const result = await runBootstrap(createInputs({ collectionSyncMode: 'reuse' }), {
       core,
       exec: execStub,
-      github,
       io: ioStub,
       postman,
       specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -767,19 +669,17 @@ describe('bootstrap action', () => {
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
-    expect(postman.updateSpec).toHaveBeenCalledWith('spec-from-vars', 'openapi: 3.1.0', 'ws-from-vars');
-    expect(github.getRepositoryVariable).toHaveBeenCalledWith('POSTMAN_CORE_PAYMENTS_WORKSPACE_ID');
-    expect(github.getRepositoryVariable).toHaveBeenCalledWith('POSTMAN_WORKSPACE_ID');
+    expect(postman.updateSpec).toHaveBeenCalledWith('spec-from-file', 'openapi: 3.1.0', 'ws-from-file');
     expect(result).toMatchObject({
-      'workspace-id': 'ws-from-vars',
-      'spec-id': 'spec-from-vars',
-      'baseline-collection-id': 'col-baseline-from-vars',
-      'smoke-collection-id': 'col-smoke-from-vars',
-      'contract-collection-id': 'col-contract-from-vars'
+      'workspace-id': 'ws-from-file',
+      'spec-id': 'spec-from-file',
+      'baseline-collection-id': 'col-baseline-from-file',
+      'smoke-collection-id': 'col-smoke-from-file',
+      'contract-collection-id': 'col-contract-from-file'
     });
   });
 
-  it('creates a new workspace when the repo-variable workspace is linked to a different repository', async () => {
+  it('ignores repository-variable asset state when .postman/resources.yaml is absent', async () => {
     const previousRepository = process.env.GITHUB_REPOSITORY;
     process.env.GITHUB_REPOSITORY = 'postman-cs/bootstrap-action-test';
 
@@ -808,20 +708,9 @@ describe('bootstrap action', () => {
         updateSpec: vi.fn().mockResolvedValue(undefined),
         getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
       };
-      const github = {
-        setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-        getRepositoryVariable: vi.fn(async (name: string) => {
-          const values: Record<string, string> = {
-            POSTMAN_WORKSPACE_ID: 'ws-from-vars'
-          };
-          return values[name] ?? '';
-        })
-      };
-
       const result = await runBootstrap(createInputs(), {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -829,10 +718,8 @@ describe('bootstrap action', () => {
         )
       });
 
-      expect(postman.getWorkspaceGitRepoUrl).toHaveBeenCalledWith('ws-from-vars', '12345', 'postman-access-token');
       expect(postman.createWorkspace).toHaveBeenCalled();
       expect(result['workspace-id']).toBe('ws-new');
-      expect(postman.updateSpec).not.toHaveBeenCalled();
     } finally {
       if (previousRepository === undefined) {
         delete process.env.GITHUB_REPOSITORY;
@@ -879,7 +766,7 @@ describe('bootstrap action', () => {
     expect(postman.createWorkspace).toHaveBeenCalled();
   });
 
-  it('skips repo variable persistence when github dependency is absent', async () => {
+  it('runs without any GitHub dependency', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -900,7 +787,7 @@ describe('bootstrap action', () => {
     };
 
     const result = await runBootstrap(
-      createInputs({ githubToken: undefined }),
+      createInputs(),
       {
         core,
         exec: execStub,
@@ -916,7 +803,7 @@ describe('bootstrap action', () => {
     expect(result['spec-id']).toBe('spec-123');
   });
 
-  it('does not reuse current resources.yaml collections for a new versioned release without a matching release entry', async () => {
+  it('version mode reuses current resources.yaml collections on the checked-out ref', async () => {
     const { core, infos } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -941,11 +828,6 @@ describe('bootstrap action', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
     };
-    const github = {
-      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
-      getRepositoryVariable: vi.fn().mockResolvedValue('')
-    };
-
     const resources = {
       workspace: { id: 'ws-current' },
       cloudResources: {
@@ -956,23 +838,8 @@ describe('bootstrap action', () => {
         }
       }
     };
-    const releases = {
-      current: 'v1.0.0',
-      releases: {
-        'v1.0.0': {
-          specId: 'spec-v1',
-          collections: {
-            baseline: 'col-baseline-v1',
-            smoke: 'col-smoke-v1',
-            contract: 'col-contract-v1'
-          }
-        }
-      }
-    };
-
     mkdirSync('.postman', { recursive: true });
     writeFileSync('.postman/resources.yaml', stringifyYaml(resources));
-    writeFileSync('.postman/releases.yaml', stringifyYaml(releases));
 
     const result = await runBootstrap(
       createInputs({
@@ -983,7 +850,6 @@ describe('bootstrap action', () => {
       {
         core,
         exec: execStub,
-        github,
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
@@ -992,16 +858,16 @@ describe('bootstrap action', () => {
       }
     );
 
-    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
-    expect(result['baseline-collection-id']).toBe('col-baseline-v2');
-    expect(result['smoke-collection-id']).toBe('col-smoke-v2');
-    expect(result['contract-collection-id']).toBe('col-contract-v2');
-    expect(infos).not.toContain('Resolved baseline-collection-id from .postman/resources.yaml');
-    expect(infos).not.toContain('Resolved smoke-collection-id from .postman/resources.yaml');
-    expect(infos).not.toContain('Resolved contract-collection-id from .postman/resources.yaml');
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(result['baseline-collection-id']).toBe('col-baseline-current');
+    expect(result['smoke-collection-id']).toBe('col-smoke-current');
+    expect(result['contract-collection-id']).toBe('col-contract-current');
+    expect(infos).toContain('Resolved baseline-collection-id from .postman/resources.yaml');
+    expect(infos).toContain('Resolved smoke-collection-id from .postman/resources.yaml');
+    expect(infos).toContain('Resolved contract-collection-id from .postman/resources.yaml');
   });
 
-  it('writes releases.yaml and emits releases-json for versioned runs without github persistence', async () => {
+  it('versioned runs do not emit releases-json or write releases.yaml', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -1029,7 +895,6 @@ describe('bootstrap action', () => {
 
     const result = await runBootstrap(
       createInputs({
-        githubToken: undefined,
         collectionSyncMode: 'version',
         specSyncMode: 'version',
         releaseLabel: 'v2.0.0'
@@ -1045,28 +910,8 @@ describe('bootstrap action', () => {
       }
     );
 
-    expect(result['releases-json']).not.toBe('');
-    const manifest = JSON.parse(result['releases-json']);
-    expect(manifest.current).toBe('v2.0.0');
-    expect(manifest.releases['v2.0.0']).toMatchObject({
-      specId: 'spec-v2',
-      collections: {
-        baseline: 'col-baseline-v2',
-        smoke: 'col-smoke-v2',
-        contract: 'col-contract-v2'
-      }
-    });
-
-    const written = parseYaml(readFileSync('.postman/releases.yaml', 'utf8')) as Record<string, any>;
-    expect(written.current).toBe('v2.0.0');
-    expect(written.releases['v2.0.0']).toMatchObject({
-      specId: 'spec-v2',
-      collections: {
-        baseline: 'col-baseline-v2',
-        smoke: 'col-smoke-v2',
-        contract: 'col-contract-v2'
-      }
-    });
+    expect('releases-json' in result).toBe(false);
+    expect(existsSync('.postman/releases.yaml')).toBe(false);
   });
 
   it('emits warnings for lint violations but does not fail', async () => {

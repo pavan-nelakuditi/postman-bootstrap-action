@@ -62,12 +62,6 @@ export const openAlphaActionContract: BetaActionContract = {
         'Optional release label. When omitted for versioned sync, the action derives one from GitHub ref metadata.',
       required: false
     },
-    'set-as-current': {
-      description:
-        'Whether the resolved assets should become the current/default repo variable pointers.',
-      required: false,
-      default: 'true'
-    },
     'project-name': {
       description: 'Service project name.',
       required: true
@@ -96,16 +90,6 @@ export const openAlphaActionContract: BetaActionContract = {
       description: 'HTTPS URL to the OpenAPI document.',
       required: true
     },
-    'environments-json': {
-      description: 'JSON array of environment slugs to preserve in bootstrap outputs.',
-      required: false,
-      default: '["prod"]'
-    },
-    'system-env-map-json': {
-      description: 'JSON map of environment slug to system environment id.',
-      required: false,
-      default: '{}'
-    },
     'governance-mapping-json': {
       description: 'JSON map of business domain to governance group name.',
       required: false,
@@ -118,19 +102,6 @@ export const openAlphaActionContract: BetaActionContract = {
     'postman-access-token': {
       description: 'Postman access token used for governance and workspace mutations.',
       required: false
-    },
-    'github-token': {
-      description: 'GitHub token for repository variable persistence.',
-      required: false
-    },
-    'gh-fallback-token': {
-      description: 'Fallback token for repository variable APIs.',
-      required: false
-    },
-    'github-auth-mode': {
-      description: 'GitHub auth mode for repository variable APIs.',
-      required: false,
-      default: 'github_token_first'
     },
     'integration-backend': {
       description: 'Integration backend for downstream workspace connectivity.',
@@ -166,9 +137,6 @@ export const openAlphaActionContract: BetaActionContract = {
     },
     'lint-summary-json': {
       description: 'JSON summary of lint errors and warnings.'
-    },
-    'releases-json': {
-      description: 'JSON-serialized releases manifest for repo-sync to persist as .postman/releases.yaml.'
     }
   },
   retainedBehavior: [
@@ -182,7 +150,6 @@ export const openAlphaActionContract: BetaActionContract = {
     'baseline, smoke, and contract collection generation',
     'collection refresh and versioning policies',
     'collection tagging',
-    'GitHub repository variable persistence for downstream sync steps',
     'workspace, spec, and collection outputs'
   ],
   removedBehavior: [

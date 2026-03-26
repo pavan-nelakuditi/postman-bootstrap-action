@@ -28,10 +28,6 @@ inputs:
   release-label:
     description: Optional release label used for versioned specs and collections
     required: false
-  set-as-current:
-    description: Whether resolved assets should become the current/default repo variable pointers
-    required: false
-    default: 'true'
   project-name:
     description: Service project name
     required: true
@@ -56,14 +52,6 @@ inputs:
   spec-url:
     description: URL to the OpenAPI document to bootstrap
     required: true
-  environments-json:
-    description: JSON array of environment slugs to preserve in bootstrap outputs
-    required: false
-    default: '["prod"]'
-  system-env-map-json:
-    description: JSON map of environment slug to system environment id
-    required: false
-    default: '{}'
   governance-mapping-json:
     description: JSON map of business domain to governance group name
     required: false
@@ -74,16 +62,6 @@ inputs:
   postman-access-token:
     description: Postman access token used for governance and workspace mutations
     required: false
-  github-token:
-    description: GitHub token for repo variable persistence
-    required: false
-  gh-fallback-token:
-    description: Fallback token for repository variable APIs
-    required: false
-  github-auth-mode:
-    description: GitHub auth mode for repository variable APIs
-    required: false
-    default: github_token_first
   integration-backend:
     description: Integration backend for downstream workspace connectivity
     required: false
@@ -107,8 +85,6 @@ outputs:
     description: JSON summary of generated collections
   lint-summary-json:
     description: JSON summary of lint errors and warnings
-  releases-json:
-    description: JSON-serialized releases manifest for repo-sync to persist as .postman/releases.yaml
 runs:
   using: node20
   main: dist/index.cjs

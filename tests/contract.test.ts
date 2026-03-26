@@ -59,9 +59,6 @@ describe('open-alpha action contract', () => {
     expect(actionManifest.inputs['spec-sync-mode'].default).toBe('update');
     expect(resolveInputs({}).specSyncMode).toBe('update');
 
-    expect(openAlphaActionContract.inputs['set-as-current'].default).toBe('true');
-    expect(actionManifest.inputs['set-as-current'].default).toBe('true');
-    expect(resolveInputs({}).setAsCurrent).toBe(true);
   });
 
   it('rejects unsupported integration backends during input resolution', () => {
@@ -85,9 +82,6 @@ describe('open-alpha action contract', () => {
     expect(openAlphaActionContract.retainedBehavior).toContain('workspace creation');
     expect(openAlphaActionContract.retainedBehavior).toContain(
       'governance group assignment'
-    );
-    expect(openAlphaActionContract.retainedBehavior).toContain(
-      'GitHub repository variable persistence for downstream sync steps'
     );
     expect(openAlphaActionContract.removedBehavior).toContain('step mode');
     expect(openAlphaActionContract.removedBehavior).toContain(
@@ -123,8 +117,7 @@ describe('open-alpha action contract', () => {
         total: 0,
         violations: [],
         warnings: 0
-      }),
-      'releases-json': ''
+      })
     });
   });
 });

@@ -1,11 +1,10 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { parse, stringify, parse as loadYaml, stringify as dumpYaml } from 'yaml';
+import { readFileSync } from 'node:fs';
+import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
-import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
@@ -23,7 +22,6 @@ export interface ResolvedInputs {
   collectionSyncMode: 'reuse' | 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
   releaseLabel?: string;
-  setAsCurrent: boolean;
   domain?: string;
   domainCode?: string;
   requesterEmail?: string;
@@ -32,14 +30,9 @@ export interface ResolvedInputs {
   teamId?: string;
   repoUrl?: string;
   specUrl: string;
-  environmentsJson: string;
-  systemEnvMapJson: string;
   governanceMappingJson: string;
   postmanApiKey: string;
   postmanAccessToken?: string;
-  githubToken?: string;
-  ghFallbackToken?: string;
-  githubAuthMode: string;
   integrationBackend: string;
   githubRefName?: string;
   githubHeadRef?: string;
@@ -57,7 +50,6 @@ export interface PlannedOutputs {
   'contract-collection-id': string;
   'collections-json': string;
   'lint-summary-json': string;
-  'releases-json': string;
 }
 
 export interface LintViolation {
@@ -71,31 +63,6 @@ export interface LintSummary {
   violations: LintViolation[];
   warnings: number;
 }
-
-interface BootstrapRepositoryVariables {
-  lintErrors: number;
-  lintWarnings: number;
-}
-
-interface ReleaseEntry {
-  specId?: string;
-  collections: {
-    baseline?: string;
-    smoke?: string;
-    contract?: string;
-  };
-  source?: {
-    ref?: string;
-    sha?: string;
-  };
-}
-
-interface ReleasesManifest {
-  current?: string;
-  releases: Record<string, ReleaseEntry>;
-}
-
-type RepoVariableClient = Pick<GitHubApiClient, 'setRepositoryVariable' | 'getRepositoryVariable'>;
 
 export interface CoreLike {
   error(message: string): void;
@@ -131,7 +98,6 @@ export interface BootstrapExecutionDependencies {
     'error' | 'group' | 'info' | 'setOutput' | 'warning'
   >;
   exec: ExecLike;
-  github?: RepoVariableClient;
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
@@ -215,18 +181,6 @@ function asStringArray(value: unknown, inputName: string): string[] {
   return value.map((entry) => String(entry));
 }
 
-function asStringMap(value: unknown, inputName: string): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${inputName} must be a JSON object`);
-  }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-      key,
-      String(entry)
-    ])
-  );
-}
-
 function parseBooleanInput(value: string | undefined, defaultValue: boolean): boolean {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return defaultValue;
@@ -299,7 +253,6 @@ export function resolveInputs(
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
     releaseLabel: getInput('release-label', env),
-    setAsCurrent: parseBooleanInput(getInput('set-as-current', env), true),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
@@ -309,26 +262,12 @@ export function resolveInputs(
     teamId: getInput('team-id', env) || env.POSTMAN_TEAM_ID || '',
     repoUrl: repoContext.repoUrl || '',
     specUrl,
-    environmentsJson:
-      getInput('environments-json', env) ??
-      openAlphaActionContract.inputs['environments-json'].default ??
-      '["prod"]',
-    systemEnvMapJson:
-      getInput('system-env-map-json', env) ??
-      openAlphaActionContract.inputs['system-env-map-json'].default ??
-      '{}',
     governanceMappingJson:
       getInput('governance-mapping-json', env) ??
       openAlphaActionContract.inputs['governance-mapping-json'].default ??
       '{}',
     postmanApiKey: getInput('postman-api-key', env) ?? '',
     postmanAccessToken: getInput('postman-access-token', env),
-    githubToken: getInput('github-token', env),
-    ghFallbackToken: getInput('gh-fallback-token', env),
-    githubAuthMode:
-      getInput('github-auth-mode', env) ??
-      openAlphaActionContract.inputs['github-auth-mode'].default ??
-      'github_token_first',
     integrationBackend,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
@@ -360,8 +299,7 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       total: 0,
       violations: [],
       warnings: 0
-    }),
-    'releases-json': ''
+    })
   };
 }
 
@@ -372,13 +310,9 @@ export function readActionInputs(
   const specUrl = requireInput(actionCore, 'spec-url');
   const postmanApiKey = requireInput(actionCore, 'postman-api-key');
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
-  const githubToken = optionalInput(actionCore, 'github-token');
-  const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token');
 
   actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
-  if (githubToken) actionCore.setSecret(githubToken);
-  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
 
   const inputs = resolveInputs({
     ...process.env,
@@ -395,9 +329,6 @@ export function readActionInputs(
       optionalInput(actionCore, 'spec-sync-mode') ??
       openAlphaActionContract.inputs['spec-sync-mode'].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
-    INPUT_SET_AS_CURRENT:
-      optionalInput(actionCore, 'set-as-current') ??
-      openAlphaActionContract.inputs['set-as-current'].default,
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
@@ -411,22 +342,11 @@ export function readActionInputs(
       optionalInput(actionCore, 'postman-team-id') || process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, 'repo-url'),
     INPUT_SPEC_URL: specUrl,
-    INPUT_ENVIRONMENTS_JSON:
-      optionalInput(actionCore, 'environments-json') ??
-      openAlphaActionContract.inputs['environments-json'].default,
-    INPUT_SYSTEM_ENV_MAP_JSON:
-      optionalInput(actionCore, 'system-env-map-json') ??
-      openAlphaActionContract.inputs['system-env-map-json'].default,
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
       openAlphaActionContract.inputs['governance-mapping-json'].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
-    INPUT_GITHUB_TOKEN: githubToken,
-    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken,
-    INPUT_GITHUB_AUTH_MODE:
-      optionalInput(actionCore, 'github-auth-mode') ??
-      openAlphaActionContract.inputs['github-auth-mode'].default,
     INPUT_INTEGRATION_BACKEND:
       optionalInput(actionCore, 'integration-backend') ??
       openAlphaActionContract.inputs['integration-backend'].default
@@ -561,28 +481,6 @@ function deriveReleaseLabel(inputs: ResolvedInputs): string | undefined {
   );
 }
 
-function parseReleasesManifest(raw: string | undefined): ReleasesManifest {
-  if (!raw?.trim()) {
-    return { releases: {} };
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<ReleasesManifest>;
-    return {
-      current:
-        typeof parsed.current === 'string' && parsed.current
-          ? parsed.current
-          : undefined,
-      releases:
-        parsed.releases && typeof parsed.releases === 'object'
-          ? parsed.releases
-          : {}
-    };
-  } catch {
-    return { releases: {} };
-  }
-}
-
 function createAssetProjectName(
   inputs: ResolvedInputs,
   releaseLabel?: string
@@ -594,44 +492,44 @@ function createAssetProjectName(
   return `${inputs.projectName} ${releaseLabel}`;
 }
 
-function createReleaseEntry(
-  releaseLabel: string,
-  outputs: PlannedOutputs,
-  inputs: ResolvedInputs
-): ReleaseEntry {
-  return {
-    specId: outputs['spec-id'],
-    collections: {
-      baseline: outputs['baseline-collection-id'],
-      smoke: outputs['smoke-collection-id'],
-      contract: outputs['contract-collection-id']
-    },
-    source: {
-      ref:
-        normalizeReleaseLabel(inputs.githubRefName) ??
-        normalizeReleaseLabel(inputs.githubRef) ??
-        releaseLabel,
-      sha: inputs.githubSha || undefined
-    }
+type CloudResourceMap = Record<string, string>;
+
+type PostmanResourcesState = {
+  workspace?: {
+    id?: string;
   };
+  cloudResources?: {
+    collections?: CloudResourceMap;
+    environments?: CloudResourceMap;
+    specs?: CloudResourceMap;
+  };
+};
+
+function readResourcesState(): PostmanResourcesState | null {
+  try {
+    return parse(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
+  } catch {
+    return null;
+  }
 }
 
-function applyReleaseEntry(
-  manifest: ReleasesManifest,
-  releaseLabel: string,
-  outputs: PlannedOutputs,
-  inputs: ResolvedInputs,
-  setAsCurrent: boolean
-): ReleasesManifest {
-  manifest.releases[releaseLabel] = createReleaseEntry(
-    releaseLabel,
-    outputs,
-    inputs
-  );
-  if (setAsCurrent) {
-    manifest.current = releaseLabel;
+function getFirstCloudResourceId(map: CloudResourceMap | undefined): string | undefined {
+  if (!map) {
+    return undefined;
   }
-  return manifest;
+  return Object.values(map)[0];
+}
+
+function findCloudResourceId(
+  map: CloudResourceMap | undefined,
+  matcher: (path: string) => boolean
+): string | undefined {
+  if (!map) {
+    return undefined;
+  }
+
+  const match = Object.entries(map).find(([filePath]) => matcher(filePath));
+  return match?.[1];
 }
 
 const SPEC_SUMMARY_MAX_LEN = 200;
@@ -720,191 +618,11 @@ function validateSpecStructure(content: string): void {
   }
 }
 
-function varName(projectName: string, baseName: string): string {
-  const slug = projectName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
-  return `POSTMAN_${slug}_${baseName}`;
-}
-
-async function getRepositoryVariableSafe(
-  github: RepoVariableClient | undefined,
-  name: string
-): Promise<string | undefined> {
-  if (!github) {
-    return undefined;
-  }
-
-  const value = await github.getRepositoryVariable(name).catch(() => undefined);
-  return value || undefined;
-}
-
-async function readVariable(
-  github: RepoVariableClient | undefined,
-  projectName: string,
-  baseName: string
-): Promise<string | undefined> {
-  if (!github) {
-    return undefined;
-  }
-
-  const namespaced = await getRepositoryVariableSafe(
-    github,
-    varName(projectName, baseName)
-  );
-  if (namespaced) {
-    return namespaced;
-  }
-
-  const legacy = await getRepositoryVariableSafe(github, `POSTMAN_${baseName}`);
-  return legacy || undefined;
-}
-
-async function persistVariable(
-  github: RepoVariableClient | undefined,
-  name: string,
-  value: string,
-  actionCore: Pick<CoreLike, 'warning'>
-): Promise<void> {
-  if (!github || !value) {
-    return;
-  }
-
-  try {
-    await github.setRepositoryVariable(name, value);
-  } catch (err) {
-    actionCore.warning(
-      `Failed to persist ${name}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-}
-
-async function writeVariable(
-  github: RepoVariableClient | undefined,
-  projectName: string,
-  baseName: string,
-  value: string,
-  actionCore: Pick<CoreLike, 'warning'>
-): Promise<void> {
-  if (!github || !value) {
-    return;
-  }
-
-  await persistVariable(github, varName(projectName, baseName), value, actionCore);
-  await persistVariable(github, `POSTMAN_${baseName}`, value, actionCore);
-}
-
-async function persistBootstrapRepositoryVariables(
-  github: RepoVariableClient,
-  projectName: string,
-  outputs: PlannedOutputs,
-  systemEnvMap: Record<string, string>,
-  environments: string[],
-  lintSummary: BootstrapRepositoryVariables,
-  actionCore: Pick<CoreLike, 'warning'>,
-  options: {
-    setAsCurrent: boolean;
-    releaseLabel?: string;
-    releasesManifest?: ReleasesManifest;
-    inputs: ResolvedInputs;
-  }
-): Promise<void> {
-  await persistVariable(
-    github,
-    'LINT_WARNINGS',
-    String(lintSummary.lintWarnings),
-    actionCore
-  );
-  await persistVariable(
-    github,
-    'LINT_ERRORS',
-    String(lintSummary.lintErrors),
-    actionCore
-  );
-  if (options.setAsCurrent) {
-    await writeVariable(
-      github,
-      projectName,
-      'WORKSPACE_ID',
-      outputs['workspace-id'],
-      actionCore
-    );
-    await writeVariable(github, projectName, 'SPEC_UID', outputs['spec-id'], actionCore);
-    await writeVariable(
-      github,
-      projectName,
-      'BASELINE_COLLECTION_UID',
-      outputs['baseline-collection-id'],
-      actionCore
-    );
-    await writeVariable(
-      github,
-      projectName,
-      'SMOKE_COLLECTION_UID',
-      outputs['smoke-collection-id'],
-      actionCore
-    );
-    await writeVariable(
-      github,
-      projectName,
-      'CONTRACT_COLLECTION_UID',
-      outputs['contract-collection-id'],
-      actionCore
-    );
-  }
-
-  if (options.releaseLabel) {
-    const manifest = applyReleaseEntry(
-      options.releasesManifest ?? { releases: {} },
-      options.releaseLabel,
-      outputs,
-      options.inputs,
-      options.setAsCurrent
-    );
-    if (options.setAsCurrent) {
-      await writeVariable(
-        github,
-        projectName,
-        'RELEASE_LABEL',
-        options.releaseLabel,
-        actionCore
-      );
-    }
-    await writeVariable(
-      github,
-      projectName,
-      'RELEASES_JSON',
-      JSON.stringify(manifest),
-      actionCore
-    );
-  }
-
-  for (const envName of environments) {
-    const systemEnvId = systemEnvMap[envName];
-    if (!systemEnvId) {
-      continue;
-    }
-    await writeVariable(
-      github,
-      projectName,
-      `SYSTEM_ENV_${envName.toUpperCase()}`,
-      systemEnvId,
-      actionCore
-    );
-  }
-}
-
 export async function runBootstrap(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies
 ): Promise<PlannedOutputs> {
   const outputs = createPlannedOutputs(inputs);
-  const environments = asStringArray(
-    parseJsonValue(inputs.environmentsJson, ['prod'], 'environments-json'),
-    'environments-json'
-  );
-  const systemEnvMap = asStringMap(
-    parseJsonValue(inputs.systemEnvMapJson, {}, 'system-env-map-json'),
-    'system-env-map-json'
-  );
   const requiresReleaseLabel =
     inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
@@ -913,8 +631,6 @@ export async function runBootstrap(
       'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
     );
   }
-  const shouldSetCurrentPointers =
-    inputs.collectionSyncMode === 'refresh' ? true : inputs.setAsCurrent;
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
 
@@ -922,32 +638,16 @@ export async function runBootstrap(
     await ensurePostmanCli(dependencies, inputs.postmanApiKey);
   });
 
+  const resourcesState = readResourcesState();
 
   let explicitWorkspaceId = inputs.workspaceId;
-
-  // .postman/ file fallback for workspace
-  if (!explicitWorkspaceId) {
-    try {
-      const raw = readFileSync('.postman/resources.yaml', 'utf8');
-      const config = loadYaml(raw) as Record<string, unknown> | null;
-      const wsId = (config?.workspace as Record<string, string> | undefined)?.id;
-      if (wsId) {
-        explicitWorkspaceId = wsId;
-        dependencies.core.info('Resolved workspace-id from .postman/resources.yaml');
-      }
-    } catch { /* file doesn't exist */ }
+  if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
+    explicitWorkspaceId = resourcesState.workspace.id;
+    dependencies.core.info('Resolved workspace-id from .postman/resources.yaml');
   }
 
-  let repoWorkspaceId: string | undefined;
+  const repoWorkspaceId = explicitWorkspaceId;
   let workspaceId = explicitWorkspaceId;
-  if (!workspaceId && dependencies.github) {
-    repoWorkspaceId = await readVariable(
-      dependencies.github,
-      inputs.projectName,
-      'WORKSPACE_ID'
-    );
-    workspaceId = repoWorkspaceId;
-  }
 
   let teamId = inputs.teamId || '';
   if (!teamId) {
@@ -1052,14 +752,6 @@ export async function runBootstrap(
   outputs['workspace-id'] = workspaceId || '';
   outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
-  await writeVariable(
-    shouldSetCurrentPointers ? dependencies.github : undefined,
-    inputs.projectName,
-    'WORKSPACE_ID',
-    outputs['workspace-id'],
-    dependencies.core
-  );
-
 
   if (inputs.domain && dependencies.internalIntegration) {
     await runGroup(
@@ -1120,50 +812,12 @@ export async function runBootstrap(
     );
   }
 
-
-  let releasesManifest: ReleasesManifest = { releases: {} };
-  if (requiresReleaseLabel) {
-    let fromFile = false;
-    try {
-      const raw = readFileSync('.postman/releases.yaml', 'utf8');
-      const parsed = loadYaml(raw);
-      if (parsed && typeof parsed === 'object') {
-        releasesManifest = parseReleasesManifest(JSON.stringify(parsed));
-        fromFile = true;
-        dependencies.core.info('Read releases manifest from .postman/releases.yaml');
-      }
-    } catch { /* file doesn't exist */ }
-    if (!fromFile) {
-      const rawManifest = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        'RELEASES_JSON'
-      );
-      releasesManifest = parseReleasesManifest(rawManifest);
-    }
-  }
-  const releaseEntry = releaseLabel ? releasesManifest.releases[releaseLabel] : undefined;
-
   let specId = inputs.specId;
-  if (!specId && inputs.specSyncMode === 'version') {
-    specId = releaseEntry?.specId;
-  }
-  if (!specId && inputs.specSyncMode === 'update') {
-    try {
-      const raw = readFileSync('.postman/resources.yaml', 'utf8');
-      const config = loadYaml(raw) as Record<string, unknown> | null;
-      const cloudSpecs = (config?.cloudResources as Record<string, unknown> | undefined)?.specs as Record<string, string> | undefined;
-      if (cloudSpecs) {
-        const firstValue = Object.values(cloudSpecs)[0];
-        if (firstValue) {
-          specId = firstValue;
-          dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
-        }
-      }
-    } catch { /* file doesn't exist */ }
-  }
-  if (!specId && dependencies.github && inputs.specSyncMode === 'update') {
-    specId = await readVariable(dependencies.github, inputs.projectName, 'SPEC_UID');
+  if (!specId) {
+    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
+    if (specId) {
+      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
+    }
   }
 
   let baselineCollectionId =
@@ -1173,55 +827,34 @@ export async function runBootstrap(
   let contractCollectionId =
     inputs.collectionSyncMode === 'refresh' ? undefined : inputs.contractCollectionId;
 
-  if (inputs.collectionSyncMode === 'version' && releaseEntry) {
-    baselineCollectionId = baselineCollectionId || releaseEntry.collections.baseline;
-    smokeCollectionId = smokeCollectionId || releaseEntry.collections.smoke;
-    contractCollectionId = contractCollectionId || releaseEntry.collections.contract;
-  }
-
-  if (inputs.collectionSyncMode === 'reuse') {
-    try {
-      const raw = readFileSync('.postman/resources.yaml', 'utf8');
-      const config = loadYaml(raw) as Record<string, unknown> | null;
-      const cloudCols = (config?.cloudResources as Record<string, unknown> | undefined)?.collections as Record<string, string> | undefined;
-      if (cloudCols) {
-        if (!baselineCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Baseline]'));
-          if (match) { baselineCollectionId = match[1]; dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml'); }
-        }
-        if (!smokeCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Smoke]'));
-          if (match) { smokeCollectionId = match[1]; dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml'); }
-        }
-        if (!contractCollectionId) {
-          const match = Object.entries(cloudCols).find(([k]) => k.includes('[Contract]'));
-          if (match) { contractCollectionId = match[1]; dependencies.core.info('Resolved contract-collection-id from .postman/resources.yaml'); }
-        }
+  if (inputs.collectionSyncMode !== 'refresh') {
+    const cloudCollections = resourcesState?.cloudResources?.collections;
+    if (!baselineCollectionId) {
+      baselineCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes('[Baseline]')
+      );
+      if (baselineCollectionId) {
+        dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
       }
-    } catch { /* file doesn't exist */ }
-  }
-
-  if (dependencies.github) {
-    if (!baselineCollectionId && inputs.collectionSyncMode === 'reuse') {
-      baselineCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        'BASELINE_COLLECTION_UID'
-      );
     }
-    if (!smokeCollectionId && inputs.collectionSyncMode === 'reuse') {
-      smokeCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        'SMOKE_COLLECTION_UID'
+    if (!smokeCollectionId) {
+      smokeCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes('[Smoke]')
       );
+      if (smokeCollectionId) {
+        dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
+      }
     }
-    if (!contractCollectionId && inputs.collectionSyncMode === 'reuse') {
-      contractCollectionId = await readVariable(
-        dependencies.github,
-        inputs.projectName,
-        'CONTRACT_COLLECTION_UID'
+    if (!contractCollectionId) {
+      contractCollectionId = findCloudResourceId(
+        cloudCollections,
+        (filePath) => filePath.includes('[Contract]')
       );
+      if (contractCollectionId) {
+        dependencies.core.info('Resolved contract-collection-id from .postman/resources.yaml');
+      }
     }
   }
 
@@ -1260,13 +893,6 @@ export async function runBootstrap(
   );
 
   void specContent;
-  await writeVariable(
-    shouldSetCurrentPointers ? dependencies.github : undefined,
-    inputs.projectName,
-    'SPEC_UID',
-    outputs['spec-id'],
-    dependencies.core
-  );
 
   const lintSummary = await runGroup(
     dependencies.core,
@@ -1312,10 +938,7 @@ export async function runBootstrap(
     dependencies.core,
     'Generate Collections from Spec',
     async () => {
-      const shouldReuseCollections =
-        inputs.collectionSyncMode === 'reuse' ||
-        (inputs.collectionSyncMode === 'version' &&
-          Boolean(baselineCollectionId && smokeCollectionId && contractCollectionId));
+      const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
       const assetProjectName =
         inputs.collectionSyncMode === 'version'
           ? createAssetProjectName(inputs, releaseLabel)
@@ -1339,14 +962,6 @@ export async function runBootstrap(
           `Using existing baseline collection: ${outputs['baseline-collection-id']}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : undefined,
-        inputs.projectName,
-        'BASELINE_COLLECTION_UID',
-        outputs['baseline-collection-id'],
-        dependencies.core
-      );
-
       if (!outputs['smoke-collection-id']) {
         outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
@@ -1358,14 +973,6 @@ export async function runBootstrap(
           `Using existing smoke collection: ${outputs['smoke-collection-id']}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : undefined,
-        inputs.projectName,
-        'SMOKE_COLLECTION_UID',
-        outputs['smoke-collection-id'],
-        dependencies.core
-      );
-
       if (!outputs['contract-collection-id']) {
         outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
@@ -1377,13 +984,6 @@ export async function runBootstrap(
           `Using existing contract collection: ${outputs['contract-collection-id']}`
         );
       }
-      await writeVariable(
-        shouldSetCurrentPointers ? dependencies.github : undefined,
-        inputs.projectName,
-        'CONTRACT_COLLECTION_UID',
-        outputs['contract-collection-id'],
-        dependencies.core
-      );
     }
   );
 
@@ -1425,57 +1025,6 @@ export async function runBootstrap(
     }
   );
 
-  if (dependencies.github) {
-    const github = dependencies.github;
-    await runGroup(
-      dependencies.core,
-      'Store Postman UIDs as Repo Variables',
-      async () => {
-        await persistBootstrapRepositoryVariables(
-          github,
-          inputs.projectName,
-          outputs,
-          systemEnvMap,
-          environments,
-          {
-            lintErrors: lintSummary.errors,
-            lintWarnings: lintSummary.warnings
-          },
-          dependencies.core,
-          {
-            setAsCurrent: shouldSetCurrentPointers,
-            releaseLabel,
-            releasesManifest,
-            inputs
-          }
-        );
-      }
-    );
-  }
-
-  if (releaseLabel) {
-    releasesManifest = applyReleaseEntry(
-      releasesManifest,
-      releaseLabel,
-      outputs,
-      inputs,
-      shouldSetCurrentPointers
-    );
-  }
-
-  // Write releases manifest to disk and emit as output
-  if (releaseLabel && Object.keys(releasesManifest.releases).length > 0) {
-    try {
-      mkdirSync('.postman', { recursive: true });
-      writeFileSync('.postman/releases.yaml', dumpYaml(releasesManifest as unknown as Record<string, unknown>, {
-        lineWidth: -1
-      }));
-    } catch (err) {
-      dependencies.core.warning(`Failed to write .postman/releases.yaml: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    outputs['releases-json'] = JSON.stringify(releasesManifest);
-  }
-
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);
   }
@@ -1496,9 +1045,6 @@ export async function runAction(
     specFetcher: fetch
   });
 
-  if (!dependencies.github) {
-    actionCore.info('GitHub repository variable persistence disabled for this run');
-  }
   if (inputs.domain && !dependencies.internalIntegration) {
     actionCore.warning(
       'Skipping governance assignment because postman-access-token is not configured'
@@ -1514,25 +1060,12 @@ export function createBootstrapDependencies(
 ): BootstrapExecutionDependencies {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken,
-    inputs.githubToken,
-    inputs.ghFallbackToken
+    inputs.postmanAccessToken
   ]);
   const postman = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
     secretMasker
   });
-  const repository = extractRepositorySlug(inputs.repoUrl);
-  const github =
-    inputs.githubToken && inputs.repoUrl && repository
-      ? new GitHubApiClient({
-        authMode: inputs.githubAuthMode as GitHubApiClientAuthMode,
-        fallbackToken: inputs.ghFallbackToken,
-        repository,
-        secretMasker,
-        token: inputs.githubToken
-      })
-      : undefined;
   const internalIntegration =
     inputs.postmanAccessToken
       ? createInternalIntegrationAdapter({
@@ -1546,31 +1079,11 @@ export function createBootstrapDependencies(
   return {
     core: factories.core,
     exec: factories.exec,
-    github,
     io: factories.io,
     internalIntegration,
     postman,
     specFetcher: factories.specFetcher ?? fetch
   };
-}
-
-export function extractRepositorySlug(repoUrl: string | undefined): string | undefined {
-  const normalized = normalizeInputValue(repoUrl);
-  if (!normalized) {
-    return undefined;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    const pathname = parsed.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '');
-    const segments = pathname.split('/').filter(Boolean);
-    if (segments.length >= 2) {
-      return `${segments[0]}/${segments[1]}`;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 const currentModulePath = typeof __filename === 'string' ? __filename : '';

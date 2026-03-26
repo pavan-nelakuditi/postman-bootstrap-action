@@ -7,6 +7,5 @@
   "smoke-collection-id": "col-smoke",
   "contract-collection-id": "col-contract",
   "collections-json": "{\"baseline\":\"col-baseline\",\"smoke\":\"col-smoke\",\"contract\":\"col-contract\"}",
-  "lint-summary-json": "{\"errors\":0,\"total\":0,\"violations\":[],\"warnings\":0}",
-  "releases-json": ""
+  "lint-summary-json": "{\"errors\":0,\"total\":0,\"violations\":[],\"warnings\":0}"
 }
