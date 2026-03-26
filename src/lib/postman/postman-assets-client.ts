@@ -110,6 +110,21 @@ export class PostmanAssetsClient {
     return undefined;
   }
 
+  async getTeams(): Promise<Array<{ id: number; name: string; handle: string; organizationId?: number }>> {
+    const data = await this.request('/teams');
+    const teams = data?.data ?? [];
+    return Array.isArray(teams)
+      ? teams
+          .filter((t: any) => t?.id && t?.name)
+          .map((t: any) => ({
+            id: Number(t.id),
+            name: String(t.name),
+            handle: String(t.handle || ''),
+            ...(t.organizationId != null ? { organizationId: Number(t.organizationId) } : {})
+          }))
+      : [];
+  }
+
   private async request(
     path: string,
     init: RequestInit = {}
@@ -144,13 +159,14 @@ export class PostmanAssetsClient {
     }
   }
 
-  async createWorkspace(name: string, about: string): Promise<{ id: string }> {
+  async createWorkspace(name: string, about: string, targetTeamId?: number): Promise<{ id: string }> {
     return retry(async () => {
       const payload = {
         workspace: {
           about,
           name,
-          type: 'team'
+          type: 'team',
+          ...(targetTeamId != null && !Number.isNaN(targetTeamId) ? { teamId: targetTeamId } : {})
         }
       };
       let created: FetchResult;
@@ -162,7 +178,9 @@ export class PostmanAssetsClient {
       } catch (err) {
         if (err instanceof Error && err.message.includes('Only personal workspaces')) {
           throw new Error(
-            'Workspace creation failed: Your team may have Org Mode enabled. Org-level workspaces require a different API request schema which is currently unsupported in this alpha version.'
+            'Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. ' +
+            'The Postman API does not allow creating team workspaces at the organization level. ' +
+            'Use the workspace-team-id input to specify which sub-team should own this workspace.'
           );
         }
         throw err;
@@ -184,7 +202,12 @@ export class PostmanAssetsClient {
       return {
         id: workspaceId
       };
-    }, { maxAttempts: 3, delayMs: 2000 });
+    }, {
+      maxAttempts: 3,
+      delayMs: 2000,
+      shouldRetry: (err) =>
+        !(err instanceof Error && err.message.includes('workspace-team-id'))
+    });
   }
 
   async listWorkspaces(): Promise<Array<{ id: string; name: string; type: string }>> {

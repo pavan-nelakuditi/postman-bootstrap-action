@@ -12,8 +12,9 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 - upload or update a remote spec in Spec Hub (after normalizing operation summaries — see below)
 - lint the uploaded spec by UID with the Postman CLI
 - generate missing baseline, smoke, and contract collections or reuse existing ones
+- optionally refresh current collections from the latest spec or create release-scoped spec and collection assets
 - inject generated tests and apply collection tags
-- persist bootstrap repo variables needed by downstream sync work
+- persist bootstrap repo variables needed by downstream sync work, including release-aware metadata for versioned runs
 
 The public open-alpha contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
@@ -24,10 +25,54 @@ The public open-alpha contract uses kebab-case inputs and outputs and defaults `
 
 For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When GitHub repo variable persistence is enabled, the action also falls back to `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, `POSTMAN_BASELINE_COLLECTION_UID`, `POSTMAN_SMOKE_COLLECTION_UID`, and `POSTMAN_CONTRACT_COLLECTION_UID` on reruns.
 
+Lifecycle behavior remains backward-compatible except for collection default mode:
+
+- `collection-sync-mode: refresh`
+- `spec-sync-mode: update`
+- `set-as-current: true`
+
+If you do not set those inputs, the action refreshes collection pointers from the resolved spec and keeps one canonical spec update path.
+
 ### Team ID derivation
 
 The action automatically derives the Postman Team ID from your `postman-api-key` via the `/me` API. There is no need to supply a separate team ID input. If the environment variable `POSTMAN_TEAM_ID` is set, that value takes precedence.
 
+### Org-mode teams
+
+Postman organizations with multiple sub-teams (squads) require an explicit `workspace-team-id` to create workspaces. The Postman API does not allow workspace creation at the organization level -- a specific sub-team must own each workspace.
+
+**How it works:**
+
+1. The action calls `GET /teams` to check if the API key belongs to an org-mode account.
+2. If multiple sub-teams are detected and no `workspace-team-id` is provided, the action fails with a list of available sub-teams and their numeric IDs.
+3. Set `workspace-team-id` to the desired sub-team ID to proceed.
+
+**Example (GitHub Actions):**
+
+```yaml
+- uses: postman-cs/postman-bootstrap-action@v0
+  with:
+    project-name: core-payments
+    spec-url: https://example.com/openapi.yaml
+    workspace-team-id: '132319'
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+```
+
+To persist the sub-team ID across runs, store it as a repository variable:
+
+```yaml
+workspace-team-id: ${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}
+```
+
+**CLI usage:**
+
+```bash
+postman-bootstrap --workspace-team-id 132319 ...
+```
+
+Or via environment variable: `export POSTMAN_WORKSPACE_TEAM_ID=132319`
+
+Non-org accounts (single team) are unaffected and do not need this input.
 ### OpenAPI operation summaries (normalization)
 
 Before upload to Spec Hub, the action parses JSON or YAML OpenAPI documents and adjusts **path operations** so collection generation is less likely to fail:
@@ -162,11 +207,16 @@ steps:
 | `baseline-collection-id` | | Reuse an existing baseline collection. |
 | `smoke-collection-id` | | Reuse an existing smoke collection. |
 | `contract-collection-id` | | Reuse an existing contract collection. |
+| `collection-sync-mode` | `refresh` | Collection lifecycle policy. `reuse` keeps existing collections, `refresh` regenerates the current collection set from the latest spec, and `version` creates or reuses release-scoped collections. |
+| `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
+| `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
+| `set-as-current` | `true` | Whether the resolved assets should update the current/default repo variable pointers. `refresh` always updates the current pointers. |
 | `project-name` | | Service name used in workspace and asset naming. |
 | `domain` | | Business domain used for governance assignment. |
 | `domain-code` | | Short prefix used when constructing the workspace name. |
 | `requester-email` | | Optional user invited into the workspace. |
 | `workspace-admin-user-ids` | | Comma-separated Postman user IDs to grant admin access. |
+| `workspace-team-id` | | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. |
 | `spec-url` | | Required registry-backed OpenAPI document URL. |
 | `environments-json` | `["prod"]` | Environment slugs preserved in outputs and repo variables. |
 | `system-env-map-json` | `{}` | Map of environment slug to system environment ID. |
@@ -177,6 +227,69 @@ steps:
 | `gh-fallback-token` | | Optional fallback token for repository variable APIs. |
 | `github-auth-mode` | `github_token_first` | Auth mode for repository variable APIs. |
 | `integration-backend` | `bifrost` | Current public open-alpha backend. |
+
+## Lifecycle Modes
+
+### Collection sync
+
+- `reuse`: existing collection IDs are reused when available.
+- `refresh`: baseline, smoke, and contract collections are regenerated from the resolved spec and become the current/default collection pointers.
+- `version`: a release-scoped collection set is created or reused. By default it becomes current, but you can keep old current pointers by setting `set-as-current: false`.
+
+### Spec sync
+
+- `update`: canonical behavior. The current spec in Spec Hub is updated from `spec-url`.
+- `version`: the action looks for a release-specific spec in `POSTMAN_RELEASES_JSON` using the resolved `release-label`. If none exists, it creates a new release-scoped spec instead of falling back to `POSTMAN_SPEC_UID`.
+
+### Release label derivation
+
+When versioned sync is requested and `release-label` is omitted, the action derives one using:
+
+1. explicit `release-label`
+2. Git tag name
+3. branch name or ref metadata
+
+If versioned sync is requested and no usable label can be derived, the run fails.
+
+### Repo variable persistence
+
+The action continues to write the current/default pointers:
+
+- `POSTMAN_WORKSPACE_ID`
+- `POSTMAN_SPEC_UID`
+- `POSTMAN_BASELINE_COLLECTION_UID`
+- `POSTMAN_SMOKE_COLLECTION_UID`
+- `POSTMAN_CONTRACT_COLLECTION_UID`
+
+For versioned runs, it also maintains `POSTMAN_RELEASES_JSON` so future runs can look up release-scoped specs and collections by `release-label`.
+
+## Versioning Examples
+
+Refresh the current collections in place while keeping one canonical spec:
+
+```yaml
+- uses: postman-cs/postman-bootstrap-action@v0
+  with:
+    project-name: core-payments
+    spec-url: https://example.com/openapi.yaml
+    collection-sync-mode: refresh
+    spec-sync-mode: update
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+```
+
+Create a side-by-side versioned spec and collection set without moving current pointers:
+
+```yaml
+- uses: postman-cs/postman-bootstrap-action@v0
+  with:
+    project-name: core-payments
+    spec-url: https://example.com/openapi.yaml
+    collection-sync-mode: version
+    spec-sync-mode: version
+    release-label: v1.1.1
+    set-as-current: false
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+```
 
 ### Obtaining `postman-api-key`
 

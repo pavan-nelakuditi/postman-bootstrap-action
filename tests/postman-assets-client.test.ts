@@ -112,4 +112,157 @@ describe('PostmanAssetsClient', () => {
 
     await expect(client.getSpecContent('spec-123')).resolves.toBeUndefined();
   });
+
+  it('creates a workspace with targetTeamId in the payload for org-mode', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          workspace: {
+            id: 'ws-org-123'
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          workspace: {
+            id: 'ws-org-123',
+            visibility: 'team'
+          }
+        })
+      );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Org WS', 'desc', 132319)).resolves.toEqual({
+      id: 'ws-org-123'
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://api.getpostman.com/workspaces',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          workspace: {
+            about: 'desc',
+            name: 'Org WS',
+            type: 'team',
+            teamId: 132319
+          }
+        })
+      })
+    );
+  });
+
+  it('creates a workspace without teamId when targetTeamId is not provided', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          workspace: { id: 'ws-no-team' }
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          workspace: { id: 'ws-no-team', visibility: 'team' }
+        })
+      );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Regular WS', 'desc')).resolves.toEqual({
+      id: 'ws-no-team'
+    });
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://api.getpostman.com/workspaces',
+      expect.objectContaining({
+        body: JSON.stringify({
+          workspace: {
+            about: 'desc',
+            name: 'Regular WS',
+            type: 'team'
+          }
+        })
+      })
+    );
+  });
+
+  it('throws actionable error for org-mode workspace creation failure', async () => {
+    const errorBody = JSON.stringify({
+      error: {
+        name: 'invalidParamError',
+        message: 'Only personal workspaces (internal) can be created outside team'
+      }
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () => new Response(errorBody, { status: 400 })
+    );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Org WS', 'desc')).rejects.toThrow(
+      'workspace-team-id'
+    );
+  });
+
+  it('returns parsed sub-teams from getTeams', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: 132109, name: 'Field Services', handle: 'fs', organizationId: 13347347 },
+          { id: 132118, name: 'Customer Education', handle: 'ce', organizationId: 13347347 },
+          { id: 132272, name: 'RonCorp', handle: 'rc', organizationId: 13347347 }
+        ]
+      })
+    );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    const teams = await client.getTeams();
+    expect(teams).toEqual([
+      { id: 132109, name: 'Field Services', handle: 'fs', organizationId: 13347347 },
+      { id: 132118, name: 'Customer Education', handle: 'ce', organizationId: 13347347 },
+      { id: 132272, name: 'RonCorp', handle: 'rc', organizationId: 13347347 }
+    ]);
+  });
+
+  it('returns empty array from getTeams when no teams exist', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({ data: [] })
+    );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.getTeams()).resolves.toEqual([]);
+  });
+
+  it('propagates errors from getTeams without swallowing', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      new Response('Forbidden', { status: 403 })
+    );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.getTeams()).rejects.toThrow();
+  });
 });

@@ -14,6 +14,14 @@ describe('parseCliArgs', () => {
         'pmak-test',
         '--workspace-admin-user-ids',
         '101,102',
+        '--collection-sync-mode',
+        'version',
+        '--spec-sync-mode',
+        'version',
+        '--release-label',
+        'v1.2.3',
+        '--set-as-current',
+        'false',
         '--team-id',
         '12345',
         '--repo-url',
@@ -30,6 +38,10 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_SPEC_URL).toBe('https://example.test/openapi.yaml');
     expect(config.inputEnv.INPUT_POSTMAN_API_KEY).toBe('pmak-test');
     expect(config.inputEnv.INPUT_WORKSPACE_ADMIN_USER_IDS).toBe('101,102');
+    expect(config.inputEnv.INPUT_COLLECTION_SYNC_MODE).toBe('version');
+    expect(config.inputEnv.INPUT_SPEC_SYNC_MODE).toBe('version');
+    expect(config.inputEnv.INPUT_RELEASE_LABEL).toBe('v1.2.3');
+    expect(config.inputEnv.INPUT_SET_AS_CURRENT).toBe('false');
     expect(config.inputEnv.INPUT_TEAM_ID).toBe('12345');
     expect(config.inputEnv.INPUT_REPO_URL).toBe('https://github.com/postman-cs/postman-bootstrap-action');
     expect(config.resultJsonPath).toBe('tmp/result.json');

@@ -19,10 +19,15 @@ export interface ResolvedInputs {
   baselineCollectionId?: string;
   smokeCollectionId?: string;
   contractCollectionId?: string;
+  collectionSyncMode: 'reuse' | 'refresh' | 'version';
+  specSyncMode: 'update' | 'version';
+  releaseLabel?: string;
+  setAsCurrent: boolean;
   domain?: string;
   domainCode?: string;
   requesterEmail?: string;
   workspaceAdminUserIds?: string;
+  workspaceTeamId?: string;
   teamId?: string;
   repoUrl?: string;
   specUrl: string;
@@ -35,6 +40,10 @@ export interface ResolvedInputs {
   ghFallbackToken?: string;
   githubAuthMode: string;
   integrationBackend: string;
+  githubRefName?: string;
+  githubHeadRef?: string;
+  githubRef?: string;
+  githubSha?: string;
 }
 
 export interface PlannedOutputs {
@@ -64,6 +73,24 @@ export interface LintSummary {
 interface BootstrapRepositoryVariables {
   lintErrors: number;
   lintWarnings: number;
+}
+
+interface ReleaseEntry {
+  specId?: string;
+  collections: {
+    baseline?: string;
+    smoke?: string;
+    contract?: string;
+  };
+  source?: {
+    ref?: string;
+    sha?: string;
+  };
+}
+
+interface ReleasesManifest {
+  current?: string;
+  releases: Record<string, ReleaseEntry>;
 }
 
 type RepoVariableClient = Pick<GitHubApiClient, 'setRepositoryVariable' | 'getRepositoryVariable'>;
@@ -116,6 +143,7 @@ export interface BootstrapExecutionDependencies {
     | 'generateCollection'
     | 'getAutoDerivedTeamId'
     | 'getSpecContent'
+    | 'getTeams'
     | 'getWorkspaceGitRepoUrl'
     | 'injectTests'
     | 'inviteRequesterToWorkspace'
@@ -197,6 +225,30 @@ function asStringMap(value: unknown, inputName: string): Record<string, string> 
   );
 }
 
+function parseBooleanInput(value: string | undefined, defaultValue: boolean): boolean {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function parseCollectionSyncMode(
+  value: string | undefined
+): 'reuse' | 'refresh' | 'version' {
+  if (value === 'reuse' || value === 'version') {
+    return value;
+  }
+  return 'refresh';
+}
+
+function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
+  if (value === 'version') {
+    return value;
+  }
+  return 'update';
+}
+
 export function resolveInputs(
   env: NodeJS.ProcessEnv = process.env
 ): ResolvedInputs {
@@ -233,17 +285,25 @@ export function resolveInputs(
   }
 
   return {
-    projectName: getInput('project-name', env) ?? '',
+    projectName: getInput('project-name', env)
+      ?? env.GITHUB_REPOSITORY?.split('/').pop()
+      ?? env.CI_PROJECT_NAME
+      ?? '',
     workspaceId: getInput('workspace-id', env),
     specId: getInput('spec-id', env),
     baselineCollectionId: getInput('baseline-collection-id', env),
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
+    collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
+    specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
+    releaseLabel: getInput('release-label', env),
+    setAsCurrent: parseBooleanInput(getInput('set-as-current', env), true),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
     workspaceAdminUserIds:
       getInput('workspace-admin-user-ids', env) || env.WORKSPACE_ADMIN_USER_IDS || '',
+    workspaceTeamId: getInput('workspace-team-id', env) || env.POSTMAN_WORKSPACE_TEAM_ID,
     teamId: getInput('team-id', env) || env.POSTMAN_TEAM_ID || '',
     repoUrl: repoContext.repoUrl || '',
     specUrl,
@@ -267,7 +327,11 @@ export function resolveInputs(
       getInput('github-auth-mode', env) ??
       openAlphaActionContract.inputs['github-auth-mode'].default ??
       'github_token_first',
-    integrationBackend
+    integrationBackend,
+    githubRefName: env.GITHUB_REF_NAME,
+    githubHeadRef: env.GITHUB_HEAD_REF,
+    githubRef: env.GITHUB_REF,
+    githubSha: env.GITHUB_SHA
   };
 }
 
@@ -321,6 +385,16 @@ export function readActionInputs(
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, 'baseline-collection-id'),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
+    INPUT_COLLECTION_SYNC_MODE:
+      optionalInput(actionCore, 'collection-sync-mode') ??
+      openAlphaActionContract.inputs['collection-sync-mode'].default,
+    INPUT_SPEC_SYNC_MODE:
+      optionalInput(actionCore, 'spec-sync-mode') ??
+      openAlphaActionContract.inputs['spec-sync-mode'].default,
+    INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
+    INPUT_SET_AS_CURRENT:
+      optionalInput(actionCore, 'set-as-current') ??
+      openAlphaActionContract.inputs['set-as-current'].default,
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
@@ -328,6 +402,8 @@ export function readActionInputs(
       actionCore,
       'workspace-admin-user-ids'
     ),
+    INPUT_WORKSPACE_TEAM_ID:
+      optionalInput(actionCore, 'workspace-team-id') || process.env.POSTMAN_WORKSPACE_TEAM_ID,
     INPUT_TEAM_ID:
       optionalInput(actionCore, 'postman-team-id') || process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, 'repo-url'),
@@ -456,6 +532,87 @@ async function fetchSpecDocument(
   );
 }
 
+function normalizeReleaseLabel(value: string | undefined): string | undefined {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed
+    .replace(/^refs\/heads\//, '')
+    .replace(/^refs\/tags\//, '')
+    .replace(/^refs\/pull\//, 'pull-')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || undefined;
+}
+
+function deriveReleaseLabel(inputs: ResolvedInputs): string | undefined {
+  if (inputs.releaseLabel) {
+    return normalizeReleaseLabel(inputs.releaseLabel);
+  }
+
+  return (
+    normalizeReleaseLabel(inputs.githubRefName) ??
+    normalizeReleaseLabel(inputs.githubHeadRef) ??
+    normalizeReleaseLabel(inputs.githubRef)
+  );
+}
+
+function parseReleasesManifest(raw: string | undefined): ReleasesManifest {
+  if (!raw?.trim()) {
+    return { releases: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ReleasesManifest>;
+    return {
+      current:
+        typeof parsed.current === 'string' && parsed.current
+          ? parsed.current
+          : undefined,
+      releases:
+        parsed.releases && typeof parsed.releases === 'object'
+          ? parsed.releases
+          : {}
+    };
+  } catch {
+    return { releases: {} };
+  }
+}
+
+function createAssetProjectName(
+  inputs: ResolvedInputs,
+  releaseLabel?: string
+): string {
+  if (!releaseLabel) {
+    return inputs.projectName;
+  }
+
+  return `${inputs.projectName} ${releaseLabel}`;
+}
+
+function createReleaseEntry(
+  releaseLabel: string,
+  outputs: PlannedOutputs,
+  inputs: ResolvedInputs
+): ReleaseEntry {
+  return {
+    specId: outputs['spec-id'],
+    collections: {
+      baseline: outputs['baseline-collection-id'],
+      smoke: outputs['smoke-collection-id'],
+      contract: outputs['contract-collection-id']
+    },
+    source: {
+      ref:
+        normalizeReleaseLabel(inputs.githubRefName) ??
+        normalizeReleaseLabel(inputs.githubRef) ??
+        releaseLabel,
+      sha: inputs.githubSha || undefined
+    }
+  };
+}
+
 const SPEC_SUMMARY_MAX_LEN = 200;
 const SPEC_HTTP_METHODS = new Set([
   'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
@@ -547,6 +704,18 @@ function varName(projectName: string, baseName: string): string {
   return `POSTMAN_${slug}_${baseName}`;
 }
 
+async function getRepositoryVariableSafe(
+  github: RepoVariableClient | undefined,
+  name: string
+): Promise<string | undefined> {
+  if (!github) {
+    return undefined;
+  }
+
+  const value = await github.getRepositoryVariable(name).catch(() => undefined);
+  return value || undefined;
+}
+
 async function readVariable(
   github: RepoVariableClient | undefined,
   projectName: string,
@@ -556,16 +725,15 @@ async function readVariable(
     return undefined;
   }
 
-  const namespaced = await github
-    .getRepositoryVariable(varName(projectName, baseName))
-    .catch(() => undefined);
+  const namespaced = await getRepositoryVariableSafe(
+    github,
+    varName(projectName, baseName)
+  );
   if (namespaced) {
     return namespaced;
   }
 
-  const legacy = await github
-    .getRepositoryVariable(`POSTMAN_${baseName}`)
-    .catch(() => undefined);
+  const legacy = await getRepositoryVariableSafe(github, `POSTMAN_${baseName}`);
   return legacy || undefined;
 }
 
@@ -610,7 +778,13 @@ async function persistBootstrapRepositoryVariables(
   systemEnvMap: Record<string, string>,
   environments: string[],
   lintSummary: BootstrapRepositoryVariables,
-  actionCore: Pick<CoreLike, 'warning'>
+  actionCore: Pick<CoreLike, 'warning'>,
+  options: {
+    setAsCurrent: boolean;
+    releaseLabel?: string;
+    releasesManifest?: ReleasesManifest;
+    inputs: ResolvedInputs;
+  }
 ): Promise<void> {
   await persistVariable(
     github,
@@ -624,35 +798,63 @@ async function persistBootstrapRepositoryVariables(
     String(lintSummary.lintErrors),
     actionCore
   );
-  await writeVariable(
-    github,
-    projectName,
-    'WORKSPACE_ID',
-    outputs['workspace-id'],
-    actionCore
-  );
-  await writeVariable(github, projectName, 'SPEC_UID', outputs['spec-id'], actionCore);
-  await writeVariable(
-    github,
-    projectName,
-    'BASELINE_COLLECTION_UID',
-    outputs['baseline-collection-id'],
-    actionCore
-  );
-  await writeVariable(
-    github,
-    projectName,
-    'SMOKE_COLLECTION_UID',
-    outputs['smoke-collection-id'],
-    actionCore
-  );
-  await writeVariable(
-    github,
-    projectName,
-    'CONTRACT_COLLECTION_UID',
-    outputs['contract-collection-id'],
-    actionCore
-  );
+  if (options.setAsCurrent) {
+    await writeVariable(
+      github,
+      projectName,
+      'WORKSPACE_ID',
+      outputs['workspace-id'],
+      actionCore
+    );
+    await writeVariable(github, projectName, 'SPEC_UID', outputs['spec-id'], actionCore);
+    await writeVariable(
+      github,
+      projectName,
+      'BASELINE_COLLECTION_UID',
+      outputs['baseline-collection-id'],
+      actionCore
+    );
+    await writeVariable(
+      github,
+      projectName,
+      'SMOKE_COLLECTION_UID',
+      outputs['smoke-collection-id'],
+      actionCore
+    );
+    await writeVariable(
+      github,
+      projectName,
+      'CONTRACT_COLLECTION_UID',
+      outputs['contract-collection-id'],
+      actionCore
+    );
+  }
+
+  if (options.releaseLabel) {
+    const manifest = options.releasesManifest ?? { releases: {} };
+    manifest.releases[options.releaseLabel] = createReleaseEntry(
+      options.releaseLabel,
+      outputs,
+      options.inputs
+    );
+    if (options.setAsCurrent) {
+      manifest.current = options.releaseLabel;
+      await writeVariable(
+        github,
+        projectName,
+        'RELEASE_LABEL',
+        options.releaseLabel,
+        actionCore
+      );
+    }
+    await writeVariable(
+      github,
+      projectName,
+      'RELEASES_JSON',
+      JSON.stringify(manifest),
+      actionCore
+    );
+  }
 
   for (const envName of environments) {
     const systemEnvId = systemEnvMap[envName];
@@ -682,6 +884,16 @@ export async function runBootstrap(
     parseJsonValue(inputs.systemEnvMapJson, {}, 'system-env-map-json'),
     'system-env-map-json'
   );
+  const requiresReleaseLabel =
+    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+  const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
+  if (requiresReleaseLabel && !releaseLabel) {
+    throw new Error(
+      'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
+    );
+  }
+  const shouldSetCurrentPointers =
+    inputs.collectionSyncMode === 'refresh' ? true : inputs.setAsCurrent;
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
 
@@ -738,11 +950,66 @@ export async function runBootstrap(
     dependencies.core.info(`Using existing workspace: ${workspaceId}`);
   }
 
+  // Parse workspace-team-id from already-resolved inputs
+  let workspaceTeamId: number | undefined;
+  if (inputs.workspaceTeamId) {
+    workspaceTeamId = parseInt(inputs.workspaceTeamId, 10);
+    if (Number.isNaN(workspaceTeamId)) {
+      throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${inputs.workspaceTeamId}`);
+    }
+  }
+
+  // Org-mode detection: only check if we need to create a workspace (not reuse existing)
+  if (!workspaceId && !workspaceTeamId) {
+    try {
+      const teams = await dependencies.postman.getTeams();
+      if (teams.length > 1 && teams.every(t => t.organizationId == null)) {
+        dependencies.core.warning(
+          'GET /teams returned multiple teams but none include organizationId. ' +
+          'Org-mode detection may be degraded due to an upstream API change. ' +
+          'If workspace creation fails, set workspace-team-id explicitly.'
+        );
+      }
+      const orgIds = new Set(teams.filter(t => t.organizationId != null).map(t => t.organizationId));
+      const meTeamId = parseInt(teamId, 10);
+      const isOrgMode = teams.length > 1
+        && orgIds.size === 1
+        && orgIds.has(meTeamId);
+
+      if (isOrgMode) {
+        const teamList = teams
+          .map(t => `  ${t.id}  ${t.name}`)
+          .join('\n');
+        throw new Error(
+          `Org-mode account detected. Workspace creation requires a specific sub-team ID.\n\n` +
+          `Available sub-teams:\n${teamList}\n\n` +
+          `To fix this, set the workspace-team-id input in your workflow:\n` +
+          `  workspace-team-id: '<id>'\n\n` +
+          `Or for reuse across runs, create a repository variable and reference it:\n` +
+          `  workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}\n\n` +
+          `For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
+        );
+      } else if (teams.length > 1) {
+        dependencies.core.warning(
+          `API key has access to ${teams.length} teams but org-mode could not be confirmed. ` +
+          `Proceeding without teamId. If workspace creation fails, set workspace-team-id explicitly.`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Org-mode account detected')) {
+        throw err;
+      }
+      dependencies.core.warning(
+        `Could not check for org-mode sub-teams: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   if (!workspaceId) {
     const workspace = await runGroup(
       dependencies.core,
       'Create Postman Workspace',
-      async () => dependencies.postman.createWorkspace(workspaceName, aboutText)
+      async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
     );
     workspaceId = workspace.id;
   }
@@ -751,7 +1018,7 @@ export async function runBootstrap(
   outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
   await writeVariable(
-    dependencies.github,
+    shouldSetCurrentPointers ? dependencies.github : undefined,
     inputs.projectName,
     'WORKSPACE_ID',
     outputs['workspace-id'],
@@ -819,31 +1086,54 @@ export async function runBootstrap(
   }
 
 
+  let releasesManifest: ReleasesManifest = { releases: {} };
+  if (requiresReleaseLabel) {
+    const rawManifest = await readVariable(
+      dependencies.github,
+      inputs.projectName,
+      'RELEASES_JSON'
+    );
+    releasesManifest = parseReleasesManifest(rawManifest);
+  }
+  const releaseEntry = releaseLabel ? releasesManifest.releases[releaseLabel] : undefined;
+
   let specId = inputs.specId;
-  if (!specId && dependencies.github) {
+  if (!specId && inputs.specSyncMode === 'version') {
+    specId = releaseEntry?.specId;
+  }
+  if (!specId && dependencies.github && inputs.specSyncMode === 'update') {
     specId = await readVariable(dependencies.github, inputs.projectName, 'SPEC_UID');
   }
 
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId =
+    inputs.collectionSyncMode === 'refresh' ? undefined : inputs.baselineCollectionId;
+  let smokeCollectionId =
+    inputs.collectionSyncMode === 'refresh' ? undefined : inputs.smokeCollectionId;
+  let contractCollectionId =
+    inputs.collectionSyncMode === 'refresh' ? undefined : inputs.contractCollectionId;
+
+  if (inputs.collectionSyncMode === 'version' && releaseEntry) {
+    baselineCollectionId = baselineCollectionId || releaseEntry.collections.baseline;
+    smokeCollectionId = smokeCollectionId || releaseEntry.collections.smoke;
+    contractCollectionId = contractCollectionId || releaseEntry.collections.contract;
+  }
 
   if (dependencies.github) {
-    if (!baselineCollectionId) {
+    if (!baselineCollectionId && inputs.collectionSyncMode === 'reuse') {
       baselineCollectionId = await readVariable(
         dependencies.github,
         inputs.projectName,
         'BASELINE_COLLECTION_UID'
       );
     }
-    if (!smokeCollectionId) {
+    if (!smokeCollectionId && inputs.collectionSyncMode === 'reuse') {
       smokeCollectionId = await readVariable(
         dependencies.github,
         inputs.projectName,
         'SMOKE_COLLECTION_UID'
       );
     }
-    if (!contractCollectionId) {
+    if (!contractCollectionId && inputs.collectionSyncMode === 'reuse') {
       contractCollectionId = await readVariable(
         dependencies.github,
         inputs.projectName,
@@ -874,7 +1164,10 @@ export async function runBootstrap(
       } else {
         specId = await dependencies.postman.uploadSpec(
           workspaceId || '',
-          inputs.projectName,
+          createAssetProjectName(
+            inputs,
+            inputs.specSyncMode === 'version' ? releaseLabel : undefined
+          ),
           document
         );
       }
@@ -885,7 +1178,7 @@ export async function runBootstrap(
 
   void specContent;
   await writeVariable(
-    dependencies.github,
+    shouldSetCurrentPointers ? dependencies.github : undefined,
     inputs.projectName,
     'SPEC_UID',
     outputs['spec-id'],
@@ -936,14 +1229,26 @@ export async function runBootstrap(
     dependencies.core,
     'Generate Collections from Spec',
     async () => {
-      outputs['baseline-collection-id'] = baselineCollectionId || '';
-      outputs['smoke-collection-id'] = smokeCollectionId || '';
-      outputs['contract-collection-id'] = contractCollectionId || '';
+      const shouldReuseCollections =
+        inputs.collectionSyncMode === 'reuse' ||
+        (inputs.collectionSyncMode === 'version' &&
+          Boolean(baselineCollectionId && smokeCollectionId && contractCollectionId));
+      const assetProjectName =
+        inputs.collectionSyncMode === 'version'
+          ? createAssetProjectName(inputs, releaseLabel)
+          : inputs.projectName;
+
+      outputs['baseline-collection-id'] =
+        shouldReuseCollections ? baselineCollectionId || '' : '';
+      outputs['smoke-collection-id'] =
+        shouldReuseCollections ? smokeCollectionId || '' : '';
+      outputs['contract-collection-id'] =
+        shouldReuseCollections ? contractCollectionId || '' : '';
 
       if (!outputs['baseline-collection-id']) {
         outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Baseline]'
         );
       } else {
@@ -952,7 +1257,7 @@ export async function runBootstrap(
         );
       }
       await writeVariable(
-        dependencies.github,
+        shouldSetCurrentPointers ? dependencies.github : undefined,
         inputs.projectName,
         'BASELINE_COLLECTION_UID',
         outputs['baseline-collection-id'],
@@ -962,7 +1267,7 @@ export async function runBootstrap(
       if (!outputs['smoke-collection-id']) {
         outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Smoke]'
         );
       } else {
@@ -971,7 +1276,7 @@ export async function runBootstrap(
         );
       }
       await writeVariable(
-        dependencies.github,
+        shouldSetCurrentPointers ? dependencies.github : undefined,
         inputs.projectName,
         'SMOKE_COLLECTION_UID',
         outputs['smoke-collection-id'],
@@ -981,7 +1286,7 @@ export async function runBootstrap(
       if (!outputs['contract-collection-id']) {
         outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Contract]'
         );
       } else {
@@ -990,7 +1295,7 @@ export async function runBootstrap(
         );
       }
       await writeVariable(
-        dependencies.github,
+        shouldSetCurrentPointers ? dependencies.github : undefined,
         inputs.projectName,
         'CONTRACT_COLLECTION_UID',
         outputs['contract-collection-id'],
@@ -1053,7 +1358,13 @@ export async function runBootstrap(
             lintErrors: lintSummary.errors,
             lintWarnings: lintSummary.warnings
           },
-          dependencies.core
+          dependencies.core,
+          {
+            setAsCurrent: shouldSetCurrentPointers,
+            releaseLabel,
+            releasesManifest,
+            inputs
+          }
         );
       }
     );

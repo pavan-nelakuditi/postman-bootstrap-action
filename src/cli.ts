@@ -193,6 +193,10 @@ export function parseCliArgs(argv: string[], env: NodeJS.ProcessEnv = process.en
     'baseline-collection-id',
     'smoke-collection-id',
     'contract-collection-id',
+    'collection-sync-mode',
+    'spec-sync-mode',
+    'release-label',
+    'set-as-current',
     'domain',
     'domain-code',
     'requester-email',
@@ -205,6 +209,7 @@ export function parseCliArgs(argv: string[], env: NodeJS.ProcessEnv = process.en
     'github-token',
     'gh-fallback-token',
     'team-id',
+    'workspace-team-id',
     'repo-url'
   ];
 

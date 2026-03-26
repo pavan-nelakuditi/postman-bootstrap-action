@@ -58,6 +58,10 @@ function createCoreStub(values: Record<string, string> = {}) {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'core-payments',
+    collectionSyncMode: 'refresh',
+    specSyncMode: 'update',
+    releaseLabel: undefined,
+    setAsCurrent: true,
     domain: 'core-banking',
     domainCode: 'AF',
     requesterEmail: 'owner@example.com',
@@ -73,6 +77,10 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     ghFallbackToken: 'github-fallback-token',
     githubAuthMode: 'github_token_first',
     integrationBackend: 'bifrost',
+    githubRefName: undefined,
+    githubHeadRef: undefined,
+    githubRef: undefined,
+    githubSha: undefined,
     ...overrides
   };
 }
@@ -134,6 +142,7 @@ describe('bootstrap action', () => {
           return 'col-contract';
         }),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -238,6 +247,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -282,6 +292,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.0.0\ninfo:\n  title: old\n'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
@@ -331,6 +342,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0'),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
@@ -366,6 +378,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -385,7 +398,8 @@ describe('bootstrap action', () => {
         specId: 'spec-existing',
         baselineCollectionId: 'col-baseline-existing',
         smokeCollectionId: 'col-smoke-existing',
-        contractCollectionId: 'col-contract-existing'
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'reuse'
       }),
       {
         core,
@@ -424,6 +438,282 @@ describe('bootstrap action', () => {
     expect(infos).toContain('Using existing contract collection: col-contract-existing');
   });
 
+  it('refresh mode regenerates collections even when ids already exist', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const generatedIds = ['col-baseline-refresh', 'col-smoke-refresh', 'col-contract-refresh'];
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn().mockResolvedValue('')
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        specId: 'spec-existing',
+        baselineCollectionId: 'col-baseline-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'refresh',
+        setAsCurrent: false
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-refresh',
+      'smoke-collection-id': 'col-smoke-refresh',
+      'contract-collection-id': 'col-contract-refresh'
+    });
+    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
+      'POSTMAN_BASELINE_COLLECTION_UID',
+      'col-baseline-refresh'
+    );
+  });
+
+  it('version mode creates release-scoped assets and persists a release manifest', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const generatedIds = ['col-baseline-v111', 'col-smoke-v111', 'col-contract-v111'];
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn(async (name: string) =>
+        name.endsWith('RELEASES_JSON') ? JSON.stringify({ releases: {} }) : ''
+      )
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'release/v1.1.1',
+        githubRefName: 'release/v1.1.1',
+        githubSha: 'deadbeef'
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-existing',
+      'core-payments release-v1.1.1',
+      'openapi: 3.1.0'
+    );
+    expect(postman.generateCollection).toHaveBeenNthCalledWith(
+      1,
+      'spec-v111',
+      'core-payments release-v1.1.1',
+      '[Baseline]'
+    );
+    const manifestCall = github.setRepositoryVariable.mock.calls.find(([name]) =>
+      String(name).endsWith('RELEASES_JSON')
+    );
+    expect(manifestCall).toBeTruthy();
+    expect(JSON.parse(String(manifestCall?.[1]))).toMatchObject({
+      current: 'release-v1.1.1',
+      releases: {
+        'release-v1.1.1': {
+          specId: 'spec-v111',
+          collections: {
+            baseline: 'col-baseline-v111',
+            smoke: 'col-smoke-v111',
+            contract: 'col-contract-v111'
+          },
+          source: {
+            ref: 'release-v1.1.1',
+            sha: 'deadbeef'
+          }
+        }
+      }
+    });
+    expect(result['spec-id']).toBe('spec-v111');
+  });
+
+  it('version mode can keep existing current pointers when set-as-current is false', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockResolvedValueOnce('col-baseline-v111')
+        .mockResolvedValueOnce('col-smoke-v111')
+        .mockResolvedValueOnce('col-contract-v111'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn(async (name: string) =>
+        name.endsWith('RELEASES_JSON')
+          ? JSON.stringify({ current: 'v1.1.0', releases: { 'v1.1.0': { collections: {} } } })
+          : ''
+      )
+    };
+
+    await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'v1.1.1',
+        githubRefName: 'v1.1.1',
+        setAsCurrent: false
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    const updatedCurrentCalls = github.setRepositoryVariable.mock.calls.filter(([name]) =>
+      /POSTMAN_(CORE_PAYMENTS_)?(WORKSPACE_ID|SPEC_UID|BASELINE_COLLECTION_UID|SMOKE_COLLECTION_UID|CONTRACT_COLLECTION_UID|RELEASE_LABEL)$/.test(
+        String(name)
+      )
+    );
+    expect(updatedCurrentCalls).toHaveLength(0);
+  });
+
+  it("version mode doesn't fall back to singleton current spec uid", async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockResolvedValueOnce('col-baseline-v112')
+        .mockResolvedValueOnce('col-smoke-v112')
+        .mockResolvedValueOnce('col-contract-v112'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v112'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn(async (name: string) => {
+        if (name.endsWith('RELEASES_JSON')) {
+          return JSON.stringify({ releases: {} });
+        }
+        if (name.endsWith('SPEC_UID')) {
+          return 'spec-current';
+        }
+        return '';
+      })
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'v1.1.2',
+        githubRefName: 'v1.1.2'
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.updateSpec).not.toHaveBeenCalledWith(
+      'spec-current',
+      'openapi: 3.1.0',
+      'ws-existing'
+    );
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-existing',
+      'core-payments v1.1.2',
+      'openapi: 3.1.0'
+    );
+    expect(result['spec-id']).toBe('spec-v112');
+  });
+
   it('falls back to repository variables for reruns before creating new assets', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
@@ -434,6 +724,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -456,7 +747,7 @@ describe('bootstrap action', () => {
       })
     };
 
-    const result = await runBootstrap(createInputs(), {
+    const result = await runBootstrap(createInputs({ collectionSyncMode: 'reuse' }), {
       core,
       exec: execStub,
       github,
@@ -502,6 +793,7 @@ describe('bootstrap action', () => {
             return 'col-contract';
           }),
         getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getTeams: vi.fn().mockResolvedValue([]),
         getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue('https://github.com/postman-cs/different-repo'),
         injectTests: vi.fn().mockResolvedValue(undefined),
         inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -554,6 +846,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn().mockResolvedValue('col-id'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -590,6 +883,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn().mockResolvedValue('col-id'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -632,6 +926,7 @@ describe('bootstrap action', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn().mockResolvedValue('col-id'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -729,3 +1024,190 @@ describe('lintSpecViaCli', () => {
     });
   });
 });
+
+  it('fails with team list when org-mode detected and no workspace-team-id', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('13347347'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 132109, name: 'Field Services', handle: 'fs', organizationId: 13347347 },
+        { id: 132118, name: 'Customer Ed', handle: 'ce', organizationId: 13347347 }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('openapi: 3.1.0', { status: 200 })
+    );
+
+    await expect(
+      runBootstrap(createInputs(), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher
+      })
+    ).rejects.toThrow('Org-mode account detected');
+
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('passes workspace-team-id to createWorkspace for org-mode accounts', async () => {
+    const { core, outputs } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-org' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('13347347'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('openapi: 3.1.0', { status: 200 })
+    );
+
+    await runBootstrap(createInputs({ workspaceTeamId: '132319' }), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman,
+      specFetcher
+    });
+
+    expect(postman.createWorkspace).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      132319
+    );
+    expect(outputs['workspace-id']).toBe('ws-org');
+  });
+
+  it('skips org-mode detection when workspace-id is already provided', async () => {
+    const { core, outputs } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('13347347'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 132109, name: 'FS', handle: 'fs', organizationId: 13347347 },
+        { id: 132118, name: 'CE', handle: 'ce', organizationId: 13347347 }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('openapi: 3.1.0', { status: 200 })
+    );
+
+    await runBootstrap(createInputs({ workspaceId: 'ws-existing' }), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman,
+      specFetcher
+    });
+
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(outputs['workspace-id']).toBe('ws-existing');
+  });
+
+  it('warns and proceeds when getTeams fails', async () => {
+    const { core } = createCoreStub();
+    const warnings: string[] = [];
+    core.warning = vi.fn((msg: string) => warnings.push(msg));
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockRejectedValue(new Error('Network error')),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('openapi: 3.1.0', { status: 200 })
+    );
+
+    await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman,
+      specFetcher
+    });
+
+    expect(warnings.some(w => w.includes('Could not check for org-mode'))).toBe(true);
+    expect(postman.createWorkspace).toHaveBeenCalled();
+  });
+
+  it('throws when workspace-team-id is non-numeric', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('openapi: 3.1.0', { status: 200 })
+    );
+
+    await expect(
+      runBootstrap(createInputs({ workspaceTeamId: 'not-a-number' }), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher
+      })
+    ).rejects.toThrow('workspace-team-id must be a numeric sub-team ID');
+  });

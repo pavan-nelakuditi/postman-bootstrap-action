@@ -1,0 +1,155 @@
+name: Contract Smoke Tests
+on:
+  schedule:
+    - cron: '0 8 * * *'   # daily at 8 AM UTC
+  workflow_dispatch: {}
+
+jobs:
+  bootstrap-smoke:
+    name: Bootstrap API Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify GET /me (org-mode key)
+        env:
+          PMAK: ${{ secrets.SMOKE_ORG_API_KEY }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -H "X-Api-Key: $PMAK" https://api.getpostman.com/me)
+          echo "$response" | jq -e '.user.teamId' > /dev/null || { echo "CONTRACT DRIFT: GET /me missing user.teamId"; exit 1; }
+          echo "GET /me: user.teamId=$(echo "$response" | jq -r '.user.teamId')"
+
+      - name: Verify GET /me (non-org key)
+        env:
+          PMAK: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -H "X-Api-Key: $PMAK" https://api.getpostman.com/me)
+          echo "$response" | jq -e '.user.teamId' > /dev/null || { echo "CONTRACT DRIFT: GET /me missing user.teamId"; exit 1; }
+          echo "GET /me: user.teamId=$(echo "$response" | jq -r '.user.teamId')"
+
+      - name: Verify GET /teams (org-mode key)
+        env:
+          PMAK: ${{ secrets.SMOKE_ORG_API_KEY }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -H "X-Api-Key: $PMAK" https://api.getpostman.com/teams)
+          echo "$response" | jq -e '.data | type == "array"' > /dev/null || { echo "CONTRACT DRIFT: GET /teams .data is not an array"; exit 1; }
+          count=$(echo "$response" | jq '.data | length')
+          echo "GET /teams: $count teams returned"
+          if [ "$count" -gt 1 ]; then
+            # Org-mode: verify organizationId is present on at least one team
+            org_count=$(echo "$response" | jq '[.data[] | select(.organizationId != null)] | length')
+            if [ "$org_count" -eq 0 ]; then
+              echo "CONTRACT DRIFT: GET /teams returned $count teams but none have organizationId"
+              exit 1
+            fi
+            echo "GET /teams: $org_count teams have organizationId"
+            # Verify required fields
+            echo "$response" | jq -e '.data[] | select(.id and .name)' > /dev/null || { echo "CONTRACT DRIFT: team items missing id or name"; exit 1; }
+          fi
+
+      - name: Verify GET /teams (non-org key)
+        env:
+          PMAK: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -H "X-Api-Key: $PMAK" https://api.getpostman.com/teams)
+          echo "$response" | jq -e '.data | type == "array"' > /dev/null || { echo "CONTRACT DRIFT: GET /teams .data is not an array"; exit 1; }
+          count=$(echo "$response" | jq '.data | length')
+          echo "GET /teams: $count teams (non-org, expecting 0 or 1)"
+
+      - name: Verify POST /workspaces with teamId (org-mode)
+        env:
+          PMAK: ${{ secrets.SMOKE_ORG_API_KEY }}
+          WORKSPACE_TEAM_ID: ${{ vars.SMOKE_WORKSPACE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ts=$(date +%s)
+          response=$(curl -sf -X POST \
+            -H "X-Api-Key: $PMAK" \
+            -H "Content-Type: application/json" \
+            -d "{\"workspace\":{\"name\":\"__smoke_test_${ts}\",\"type\":\"team\",\"description\":\"Contract smoke test - safe to delete\",\"teamId\":${WORKSPACE_TEAM_ID}}}" \
+            https://api.getpostman.com/workspaces)
+          ws_id=$(echo "$response" | jq -r '.workspace.id')
+          if [ -z "$ws_id" ] || [ "$ws_id" = "null" ]; then
+            echo "CONTRACT DRIFT: POST /workspaces did not return workspace.id"
+            echo "Response: $response"
+            exit 1
+          fi
+          echo "POST /workspaces: created workspace $ws_id"
+
+          # Cleanup
+          curl -sf -X DELETE -H "X-Api-Key: $PMAK" "https://api.getpostman.com/workspaces/$ws_id" > /dev/null
+          echo "Cleanup: deleted workspace $ws_id"
+
+      - name: Verify POST /workspaces without teamId (non-org)
+        env:
+          PMAK: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+        run: |
+          set -euo pipefail
+          ts=$(date +%s)
+          response=$(curl -sf -X POST \
+            -H "X-Api-Key: $PMAK" \
+            -H "Content-Type: application/json" \
+            -d "{\"workspace\":{\"name\":\"__smoke_test_${ts}\",\"type\":\"team\",\"description\":\"Contract smoke test - safe to delete\"}}" \
+            https://api.getpostman.com/workspaces)
+          ws_id=$(echo "$response" | jq -r '.workspace.id')
+          if [ -z "$ws_id" ] || [ "$ws_id" = "null" ]; then
+            echo "CONTRACT DRIFT: POST /workspaces (no teamId) did not return workspace.id"
+            echo "Response: $response"
+            exit 1
+          fi
+          echo "POST /workspaces (no teamId): created workspace $ws_id"
+
+          # Cleanup
+          curl -sf -X DELETE -H "X-Api-Key: $PMAK" "https://api.getpostman.com/workspaces/$ws_id" > /dev/null
+          echo "Cleanup: deleted workspace $ws_id"
+
+  bifrost-smoke:
+    name: Bifrost API Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Bifrost API key creation
+        env:
+          ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          ts=$(date +%s)
+          response=$(curl -sf -X POST \
+            -H "x-access-token: $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"method\":\"POST\",\"path\":\"/scim/v2/keys\",\"body\":{\"name\":\"smoke-test-${ts}\",\"description\":\"Contract smoke - safe to delete\"}}" \
+            https://bifrost-premium-https-v4.gw.postman.com)
+          # Verify PMAK-shaped key returned
+          key=$(echo "$response" | jq -r '.apikey.key // .key // empty')
+          if [ -z "$key" ]; then
+            echo "CONTRACT DRIFT: Bifrost API key creation did not return apikey.key"
+            echo "Response: $(echo "$response" | head -c 500)"
+            exit 1
+          fi
+          echo "Bifrost key creation: key starts with $(echo "$key" | head -c 10)..."
+
+  session-smoke:
+    name: Session Validation Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify iapub session endpoint
+        env:
+          ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf \
+            -H "x-access-token: $ACCESS_TOKEN" \
+            https://iapub.postman.co/api/sessions/current)
+          echo "$response" | jq -e '.session.identity.team' > /dev/null || {
+            echo "CONTRACT DRIFT: iapub session endpoint missing session.identity.team"
+            echo "Response shape: $(echo "$response" | jq 'keys')"
+            exit 1
+          }
+          echo "Session validation: team=$(echo "$response" | jq -r '.session.identity.team')"

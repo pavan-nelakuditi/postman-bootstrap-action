@@ -17,6 +17,21 @@ inputs:
   contract-collection-id:
     description: Existing contract collection ID
     required: false
+  collection-sync-mode:
+    description: Collection lifecycle policy (reuse, refresh, or version)
+    required: false
+    default: refresh
+  spec-sync-mode:
+    description: Spec lifecycle policy (update or version)
+    required: false
+    default: update
+  release-label:
+    description: Optional release label used for versioned specs and collections
+    required: false
+  set-as-current:
+    description: Whether resolved assets should become the current/default repo variable pointers
+    required: false
+    default: 'true'
   project-name:
     description: Service project name
     required: true
@@ -31,6 +46,12 @@ inputs:
     required: false
   workspace-admin-user-ids:
     description: Comma-separated workspace admin user ids
+    required: false
+  workspace-team-id:
+    description: >-
+      Numeric sub-team ID for org-mode workspace creation. Required when the
+      API key belongs to an org with multiple sub-teams. Run the action without
+      this input to see available sub-teams listed in the error output.
     required: false
   spec-url:
     description: URL to the OpenAPI document to bootstrap
