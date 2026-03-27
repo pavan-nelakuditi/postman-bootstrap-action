@@ -598,7 +598,18 @@ function summarizeCollectionShape(collection: unknown): string {
     }
 
     const item = entry as Record<string, unknown>;
-    return `#${index + 1}:${typeof item.name === 'string' ? item.name : '<unnamed>'}:request=${typeof item.request}`;
+    const children = Array.isArray(item.item) ? item.item : [];
+    const childSummary = children.slice(0, 3).map((child, childIndex) => {
+      if (!child || typeof child !== 'object') {
+        return `child#${childIndex + 1}:non-object`;
+      }
+
+      const childItem = child as Record<string, unknown>;
+      const grandChildren = Array.isArray(childItem.item) ? childItem.item.length : 0;
+      return `child#${childIndex + 1}:${typeof childItem.name === 'string' ? childItem.name : '<unnamed>'}:request=${typeof childItem.request}:itemCount=${grandChildren}`;
+    });
+
+    return `#${index + 1}:${typeof item.name === 'string' ? item.name : '<unnamed>'}:request=${typeof item.request}:itemCount=${children.length}:children=[${childSummary.join(', ')}]`;
   });
 
   return `keys=${topLevelKeys.join(',') || '<none>'}; itemCount=${items.length}; sample=[${sample.join('; ')}]`;
@@ -1149,6 +1160,9 @@ export async function runBootstrap(
         dependencies.core.warning(
           `Failed to build baseline operation lookup: ${error instanceof Error ? error.message : String(error)}`
         );
+        if (error instanceof Error && error.stack) {
+          dependencies.core.warning(`Baseline lookup stack: ${error.stack}`);
+        }
       }
     }
   );
