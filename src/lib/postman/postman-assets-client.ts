@@ -683,10 +683,22 @@ export class PostmanAssetsClient {
   }
 
   async updateCollection(collectionUid: string, collection: Record<string, any>): Promise<void> {
-    await this.request(`/collections/${collectionUid}`, {
-      method: 'PUT',
-      body: JSON.stringify({ collection })
-    });
+    try {
+      await this.request(`/collections/${collectionUid}`, {
+        method: 'PUT',
+        body: JSON.stringify({ collection })
+      });
+    } catch (error) {
+      const info = collection?.info && typeof collection.info === 'object'
+        ? collection.info
+        : {};
+      const itemCount = Array.isArray(collection?.item) ? collection.item.length : 0;
+      const summary = `collectionUid=${collectionUid}; name=${String((info as Record<string, unknown>).name || '<unnamed>')}; itemCount=${itemCount}`;
+      if (error instanceof Error) {
+        throw new Error(`Collection update failed (${summary}): ${error.message}`);
+      }
+      throw new Error(`Collection update failed (${summary}): ${String(error)}`);
+    }
   }
 
   async createEnvironment(

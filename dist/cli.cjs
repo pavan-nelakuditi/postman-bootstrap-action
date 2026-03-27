@@ -30130,10 +30130,20 @@ var PostmanAssetsClient = class {
     });
   }
   async updateCollection(collectionUid, collection) {
-    await this.request(`/collections/${collectionUid}`, {
-      method: "PUT",
-      body: JSON.stringify({ collection })
-    });
+    try {
+      await this.request(`/collections/${collectionUid}`, {
+        method: "PUT",
+        body: JSON.stringify({ collection })
+      });
+    } catch (error) {
+      const info = collection?.info && typeof collection.info === "object" ? collection.info : {};
+      const itemCount = Array.isArray(collection?.item) ? collection.item.length : 0;
+      const summary = `collectionUid=${collectionUid}; name=${String(info.name || "<unnamed>")}; itemCount=${itemCount}`;
+      if (error instanceof Error) {
+        throw new Error(`Collection update failed (${summary}): ${error.message}`);
+      }
+      throw new Error(`Collection update failed (${summary}): ${String(error)}`);
+    }
   }
   async createEnvironment(workspaceId, name, values) {
     const response = await this.request(`/environments?workspace=${workspaceId}`, {
@@ -30939,6 +30949,32 @@ function summarizeCollectionShape(collection) {
   });
   return `keys=${topLevelKeys.join(",") || "<none>"}; itemCount=${items.length}; sample=[${sample.join("; ")}]`;
 }
+function summarizeCollectionForUpdate(collection) {
+  if (!collection || typeof collection !== "object") {
+    return `collectionType=${typeof collection}`;
+  }
+  const record = collection;
+  const items = Array.isArray(record.item) ? record.item : [];
+  const sample = items.slice(0, 5).map((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return `#${index + 1}:non-object`;
+    }
+    const item = entry;
+    const children = Array.isArray(item.item) ? item.item : [];
+    const childSummary = children.slice(0, 3).map((child, childIndex) => {
+      if (!child || typeof child !== "object") {
+        return `child#${childIndex + 1}:non-object`;
+      }
+      const childItem = child;
+      const eventCount = Array.isArray(childItem.event) ? childItem.event.length : 0;
+      const responseCount = Array.isArray(childItem.response) ? childItem.response.length : 0;
+      return `child#${childIndex + 1}:${typeof childItem.name === "string" ? childItem.name : "<unnamed>"}:request=${typeof childItem.request}:eventCount=${eventCount}:responseCount=${responseCount}`;
+    });
+    return `#${index + 1}:${typeof item.name === "string" ? item.name : "<unnamed>"}:request=${typeof item.request}:itemCount=${children.length}:children=[${childSummary.join(", ")}]`;
+  });
+  const variableCount = Array.isArray(record.variable) ? record.variable.length : 0;
+  return `name=${typeof record.info === "object" && record.info && typeof record.info.name === "string" ? record.info.name : "<unnamed>"}; itemCount=${items.length}; variableCount=${variableCount}; sample=[${sample.join("; ")}]`;
+}
 var SPEC_SUMMARY_MAX_LEN = 200;
 var SPEC_HTTP_METHODS = /* @__PURE__ */ new Set([
   "get",
@@ -31491,7 +31527,20 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           }
           const collection = await getCollection(collectionId);
           collection.item = curatedItems;
-          await updateCollection(collectionId, collection);
+          dependencies.core.warning(
+            `Curated ${collectionType} payload summary before update: ${summarizeCollectionForUpdate(collection)}`
+          );
+          try {
+            await updateCollection(collectionId, collection);
+          } catch (error) {
+            dependencies.core.warning(
+              `Curated ${collectionType} payload failed update: ${summarizeCollectionForUpdate(collection)}`
+            );
+            if (error instanceof Error && error.stack) {
+              dependencies.core.warning(`Curated ${collectionType} update stack: ${error.stack}`);
+            }
+            throw error;
+          }
           dependencies.core.info(
             `Curated ${collectionType} collection with ${curatedItems.length} flow folder(s)`
           );
