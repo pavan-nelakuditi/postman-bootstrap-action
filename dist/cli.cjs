@@ -30205,8 +30205,30 @@ var PostmanAssetsClient = class {
     };
   }
   async getCollection(uid) {
-    const response = await this.request(`/collections/${uid}`);
-    return response?.collection;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1e4);
+    });
+    return retry(async () => {
+      let response = null;
+      try {
+        response = await this.request(`/collections/${uid}`);
+      } catch (error) {
+        const message = this.secretMasker(
+          error instanceof Error ? error.message : String(error)
+        );
+        if (message.includes("reading 'request'")) {
+          throw new Error(`Collection ${uid} is not ready to read yet`);
+        }
+        throw error;
+      }
+      if (!response?.collection) {
+        throw new Error(`Collection ${uid} response did not include collection payload`);
+      }
+      return response.collection;
+    }, {
+      maxAttempts: 4,
+      delayMs: 3e3
+    });
   }
   async getEnvironment(uid) {
     const response = await this.request(`/environments/${uid}`);

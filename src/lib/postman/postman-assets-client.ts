@@ -787,8 +787,33 @@ export class PostmanAssetsClient {
   }
 
   async getCollection(uid: string): Promise<any> {
-    const response = await this.request(`/collections/${uid}`);
-    return response?.collection;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 10000);
+    });
+
+    return retry(async () => {
+      let response: FetchResult = null;
+      try {
+        response = await this.request(`/collections/${uid}`);
+      } catch (error) {
+        const message = this.secretMasker(
+          error instanceof Error ? error.message : String(error)
+        );
+        if (message.includes("reading 'request'")) {
+          throw new Error(`Collection ${uid} is not ready to read yet`);
+        }
+        throw error;
+      }
+
+      if (!response?.collection) {
+        throw new Error(`Collection ${uid} response did not include collection payload`);
+      }
+
+      return response.collection;
+    }, {
+      maxAttempts: 4,
+      delayMs: 3000
+    });
   }
 
   async getEnvironment(uid: string): Promise<any> {
