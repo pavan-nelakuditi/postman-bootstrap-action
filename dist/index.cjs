@@ -31366,33 +31366,50 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     dependencies.core,
     "Build Baseline Operation Lookup",
     async () => {
-      try {
-        const getCollection = dependencies.postman.getCollection;
-        if (!getCollection) {
-          dependencies.core.warning("Skipping baseline operation lookup because getCollection is unavailable");
-          return;
-        }
-        const baselineCollection = await getCollection(
-          outputs["baseline-collection-id"]
-        );
-        const baselineRequests = buildBaselineRequestCatalog(baselineCollection);
-        const lookup = matchOperationsToBaselineRequests(
+      const getCollection = dependencies.postman.getCollection;
+      if (!getCollection) {
+        dependencies.core.warning("Skipping baseline operation lookup because getCollection is unavailable");
+        return;
+      }
+      const buildLookupFromCollection = (collection) => {
+        const baselineRequests = buildBaselineRequestCatalog(collection);
+        return matchOperationsToBaselineRequests(
           specOperationCatalog,
           baselineRequests
+        );
+      };
+      try {
+        const lookup = await retry(
+          async () => {
+            const baselineCollection = await getCollection(
+              outputs["baseline-collection-id"]
+            );
+            return buildLookupFromCollection(baselineCollection);
+          },
+          {
+            maxAttempts: 3,
+            delayMs: 2e3
+          }
         );
         baselineOperationLookup = lookup;
         dependencies.core.info(
           `Mapped ${lookup.size}/${specOperationCatalog.length} spec operations to baseline requests`
         );
       } catch (error) {
-        if (inputs.flowManifestUrl && dependencies.postman.getCollection) {
+        if (inputs.flowManifestUrl) {
           try {
-            const collection = await dependencies.postman.getCollection(
+            const collection = await getCollection(
               outputs["baseline-collection-id"]
             );
             dependencies.core.warning(
               `Baseline collection shape: ${summarizeCollectionShape(collection)}`
             );
+            const recoveredLookup = buildLookupFromCollection(collection);
+            baselineOperationLookup = recoveredLookup;
+            dependencies.core.info(
+              `Recovered baseline operation lookup after retry with ${recoveredLookup.size}/${specOperationCatalog.length} mapped operations`
+            );
+            return;
           } catch (shapeError) {
             dependencies.core.warning(
               `Failed to inspect baseline collection shape: ${shapeError instanceof Error ? shapeError.message : String(shapeError)}`
