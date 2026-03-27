@@ -28977,6 +28977,9 @@ function collectCollectionItems(node) {
   }
   if (Array.isArray(node.item)) {
     for (const child of node.item) {
+      if (!isObject(child)) {
+        continue;
+      }
       items.push(...collectCollectionItems(child));
     }
   }
