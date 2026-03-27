@@ -24,6 +24,21 @@ The public open-alpha contract uses kebab-case inputs and outputs and defaults `
 
 For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When GitHub repo variable persistence is enabled, the action also falls back to `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, `POSTMAN_BASELINE_COLLECTION_UID`, `POSTMAN_SMOKE_COLLECTION_UID`, and `POSTMAN_CONTRACT_COLLECTION_UID` on reruns.
 
+### Bootstrap phase independence
+
+**Bootstrap succeeds independently** — it creates or updates Postman workspace and collections even if a later stage (repo sync, Insights onboarding) fails. This is intentional:
+
+- **Postman side is self-contained:** Workspace creation, spec upload, and collection generation do not depend on repository access or merge status.
+- **Repository side is async:** Later stages may fail due to repo permissions, branch protection, or pending approval. Bootstrap completion is not blocked by these downstream concerns.
+- **Idempotent reruns:** If a later stage fails, subsequent reruns of the action will reuse existing Postman assets (via `workspace-id`, `spec-id`, collection IDs) and focus on the failed stage without recreating everything.
+
+**When bootstrap fails:** The action stops and does not proceed to repo sync. Postman assets are left in the state they reached before the failure. Clear error messages identify which bootstrap step failed (e.g. spec lint, governance assignment, collection generation).
+
+This layered design means customers can:
+1. Verify Postman workspace health independently.
+2. Debug repository issues (branch protection, permissions) separately from Postman provisioning.
+3. Reuse existing Postman assets when fixing downstream failures.
+
 ### Team ID derivation
 
 The action automatically derives the Postman Team ID from your `postman-api-key` via the `/me` API. There is no need to supply a separate team ID input. If the environment variable `POSTMAN_TEAM_ID` is set, that value takes precedence.
