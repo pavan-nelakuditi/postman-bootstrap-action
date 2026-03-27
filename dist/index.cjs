@@ -29007,6 +29007,9 @@ function extractRequestPath(url) {
 function buildBaselineRequestCatalog(collection) {
   const items = collectCollectionItems(collection);
   return items.flatMap((item) => {
+    if (!isObject(item)) {
+      return [];
+    }
     const request = isObject(item.request) ? item.request : void 0;
     if (!request) return [];
     const method = typeof request.method === "string" ? request.method.toUpperCase() : "";

@@ -233,6 +233,10 @@ function extractRequestPath(url: unknown): string {
 export function buildBaselineRequestCatalog(collection: unknown): BaselineRequestEntry[] {
   const items = collectCollectionItems(collection);
   return items.flatMap((item) => {
+    if (!isObject(item)) {
+      return [];
+    }
+
     const request = isObject(item.request) ? item.request : undefined;
     if (!request) return [];
 
