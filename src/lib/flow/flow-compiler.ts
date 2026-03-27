@@ -7,6 +7,27 @@ function cloneItem<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function sanitizeItemForCollectionUpdate(item: CollectionItem): CollectionItem {
+  delete item.id;
+  delete item.uid;
+  delete item._postman_id;
+  delete item.response;
+
+  if (Array.isArray(item.item)) {
+    item.item = item.item
+      .filter((child) => child && typeof child === 'object')
+      .map((child) => sanitizeItemForCollectionUpdate(child as CollectionItem));
+  }
+
+  if (item.request && typeof item.request === 'object') {
+    delete item.request.id;
+    delete item.request.uid;
+    delete item.request._postman_id;
+  }
+
+  return item;
+}
+
 function setRequestDescription(item: CollectionItem, stepKey: string, operationId: string): void {
   const request = item.request;
   if (!request || typeof request !== 'object') {
@@ -237,7 +258,7 @@ export function compileFlowCollectionItems(
           );
         }
 
-        const item = cloneItem(template.item);
+        const item = sanitizeItemForCollectionUpdate(cloneItem(template.item));
         setRequestDescription(item, step.stepKey, step.operationId);
 
         const request = item.request ?? {};

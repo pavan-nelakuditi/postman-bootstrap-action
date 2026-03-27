@@ -29049,6 +29049,21 @@ function matchOperationsToBaselineRequests(specOperations, baselineRequests) {
 function cloneItem(value) {
   return JSON.parse(JSON.stringify(value));
 }
+function sanitizeItemForCollectionUpdate(item) {
+  delete item.id;
+  delete item.uid;
+  delete item._postman_id;
+  delete item.response;
+  if (Array.isArray(item.item)) {
+    item.item = item.item.filter((child) => child && typeof child === "object").map((child) => sanitizeItemForCollectionUpdate(child));
+  }
+  if (item.request && typeof item.request === "object") {
+    delete item.request.id;
+    delete item.request.uid;
+    delete item.request._postman_id;
+  }
+  return item;
+}
 function setRequestDescription(item, stepKey, operationId) {
   const request = item.request;
   if (!request || typeof request !== "object") {
@@ -29232,7 +29247,7 @@ function compileFlowCollectionItems(manifest, type, operationLookup, specOperati
           `Unable to resolve operation metadata for "${step.operationId}" in flow "${flow.name}"`
         );
       }
-      const item = cloneItem(template.item);
+      const item = sanitizeItemForCollectionUpdate(cloneItem(template.item));
       setRequestDescription(item, step.stepKey, step.operationId);
       const request = item.request ?? {};
       for (const binding of step.bindings ?? []) {

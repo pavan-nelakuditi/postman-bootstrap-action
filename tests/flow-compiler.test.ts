@@ -192,4 +192,67 @@ describe('flow compiler', () => {
       }
     });
   });
+
+  it('strips server-managed ids and response examples from cloned items before update', () => {
+    const manifest: ParsedFlowManifest = {
+      flows: [
+        {
+          name: 'sanitized smoke',
+          type: 'smoke',
+          steps: [
+            {
+              stepKey: 'list-products-1',
+              operationId: 'listProducts'
+            }
+          ]
+        }
+      ]
+    };
+
+    const lookup = new Map([
+      [
+        'listProducts',
+        {
+          canonicalPath: '/products',
+          item: {
+            id: 'item-123',
+            uid: 'uid-123',
+            name: 'List products',
+            request: {
+              id: 'request-123',
+              method: 'GET',
+              url: {
+                raw: '{{baseUrl}}/products'
+              }
+            },
+            response: [{ name: '200 OK' }]
+          },
+          itemName: 'List products',
+          method: 'GET',
+          path: '/products'
+        }
+      ]
+    ]);
+
+    const specOperationMap = new Map<string, SpecOperationEntry>([
+      [
+        'listProducts',
+        {
+          canonicalPath: '/products',
+          inputTargets: {},
+          method: 'GET',
+          operationId: 'listProducts',
+          path: '/products'
+        }
+      ]
+    ]);
+
+    const items = compileFlowCollectionItems(manifest, 'smoke', lookup, specOperationMap);
+    const requestItem = items[0].item[0];
+
+    expect(requestItem.id).toBeUndefined();
+    expect(requestItem.uid).toBeUndefined();
+    expect(requestItem.response).toBeUndefined();
+    expect(requestItem.request.id).toBeUndefined();
+  });
 });
