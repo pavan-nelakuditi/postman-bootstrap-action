@@ -566,6 +566,44 @@ function findCloudResourceId(
   return match?.[1];
 }
 
+function createCollectionResourceMatcher(
+  prefix: '[Baseline]' | '[Smoke]' | '[Contract]',
+  releaseLabel?: string
+): (path: string) => boolean {
+  return (filePath: string) => {
+    const normalizedPath = String(filePath || '');
+    if (!normalizedPath.includes(prefix)) {
+      return false;
+    }
+
+    if (!releaseLabel) {
+      return true;
+    }
+
+    return normalizedPath.includes(` ${releaseLabel}`);
+  };
+}
+
+function summarizeCollectionShape(collection: unknown): string {
+  if (!collection || typeof collection !== 'object') {
+    return `top-level=${typeof collection}`;
+  }
+
+  const record = collection as Record<string, unknown>;
+  const topLevelKeys = Object.keys(record);
+  const items = Array.isArray(record.item) ? record.item : [];
+  const sample = items.slice(0, 5).map((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      return `#${index + 1}:non-object`;
+    }
+
+    const item = entry as Record<string, unknown>;
+    return `#${index + 1}:${typeof item.name === 'string' ? item.name : '<unnamed>'}:request=${typeof item.request}`;
+  });
+
+  return `keys=${topLevelKeys.join(',') || '<none>'}; itemCount=${items.length}; sample=[${sample.join('; ')}]`;
+}
+
 const SPEC_SUMMARY_MAX_LEN = 200;
 const SPEC_HTTP_METHODS = new Set([
   'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
@@ -866,7 +904,10 @@ export async function runBootstrap(
     if (!baselineCollectionId) {
       baselineCollectionId = findCloudResourceId(
         cloudCollections,
-        (filePath) => filePath.includes('[Baseline]')
+        createCollectionResourceMatcher(
+          '[Baseline]',
+          inputs.collectionSyncMode === 'version' ? releaseLabel : undefined
+        )
       );
       if (baselineCollectionId) {
         dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
@@ -875,7 +916,10 @@ export async function runBootstrap(
     if (!smokeCollectionId) {
       smokeCollectionId = findCloudResourceId(
         cloudCollections,
-        (filePath) => filePath.includes('[Smoke]')
+        createCollectionResourceMatcher(
+          '[Smoke]',
+          inputs.collectionSyncMode === 'version' ? releaseLabel : undefined
+        )
       );
       if (smokeCollectionId) {
         dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
@@ -884,7 +928,10 @@ export async function runBootstrap(
     if (!contractCollectionId) {
       contractCollectionId = findCloudResourceId(
         cloudCollections,
-        (filePath) => filePath.includes('[Contract]')
+        createCollectionResourceMatcher(
+          '[Contract]',
+          inputs.collectionSyncMode === 'version' ? releaseLabel : undefined
+        )
       );
       if (contractCollectionId) {
         dependencies.core.info('Resolved contract-collection-id from .postman/resources.yaml');
@@ -1085,6 +1132,20 @@ export async function runBootstrap(
           `Mapped ${lookup.size}/${specOperationCatalog.length} spec operations to baseline requests`
         );
       } catch (error) {
+        if (inputs.flowManifestUrl && dependencies.postman.getCollection) {
+          try {
+            const collection = await dependencies.postman.getCollection(
+              outputs['baseline-collection-id']
+            );
+            dependencies.core.warning(
+              `Baseline collection shape: ${summarizeCollectionShape(collection)}`
+            );
+          } catch (shapeError) {
+            dependencies.core.warning(
+              `Failed to inspect baseline collection shape: ${shapeError instanceof Error ? shapeError.message : String(shapeError)}`
+            );
+          }
+        }
         dependencies.core.warning(
           `Failed to build baseline operation lookup: ${error instanceof Error ? error.message : String(error)}`
         );

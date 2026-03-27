@@ -996,7 +996,7 @@ paths:
     expect(result['spec-id']).toBe('spec-123');
   });
 
-  it('version mode reuses current resources.yaml collections on the checked-out ref', async () => {
+  it('version mode only reuses release-matching resources.yaml collections on the checked-out ref', async () => {
     const { core, infos } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -1027,7 +1027,10 @@ paths:
         collections: {
           '../postman/collections/[Baseline] core-payments': 'col-baseline-current',
           '../postman/collections/[Smoke] core-payments': 'col-smoke-current',
-          '../postman/collections/[Contract] core-payments': 'col-contract-current'
+          '../postman/collections/[Contract] core-payments': 'col-contract-current',
+          '../postman/collections/[Baseline] core-payments v2.0.0': 'col-baseline-v2',
+          '../postman/collections/[Smoke] core-payments v2.0.0': 'col-smoke-v2',
+          '../postman/collections/[Contract] core-payments v2.0.0': 'col-contract-v2'
         }
       }
     };
@@ -1052,12 +1055,73 @@ paths:
     );
 
     expect(postman.generateCollection).not.toHaveBeenCalled();
-    expect(result['baseline-collection-id']).toBe('col-baseline-current');
-    expect(result['smoke-collection-id']).toBe('col-smoke-current');
-    expect(result['contract-collection-id']).toBe('col-contract-current');
+    expect(result['baseline-collection-id']).toBe('col-baseline-v2');
+    expect(result['smoke-collection-id']).toBe('col-smoke-v2');
+    expect(result['contract-collection-id']).toBe('col-contract-v2');
     expect(infos).toContain('Resolved baseline-collection-id from .postman/resources.yaml');
     expect(infos).toContain('Resolved smoke-collection-id from .postman/resources.yaml');
     expect(infos).toContain('Resolved contract-collection-id from .postman/resources.yaml');
+  });
+
+  it('version mode generates new collections when checked-out ref has only non-matching collection mappings', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline-v3';
+          if (prefix === '[Smoke]') return 'col-smoke-v3';
+          return 'col-contract-v3';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-v3'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const resources = {
+      workspace: { id: 'ws-current' },
+      cloudResources: {
+        collections: {
+          '../postman/collections/[Baseline] core-payments': 'col-baseline-current',
+          '../postman/collections/[Smoke] core-payments': 'col-smoke-current',
+          '../postman/collections/[Contract] core-payments': 'col-contract-current'
+        }
+      }
+    };
+    mkdirSync('.postman', { recursive: true });
+    writeFileSync('.postman/resources.yaml', stringifyYaml(resources));
+
+    const result = await runBootstrap(
+      createInputs({
+        collectionSyncMode: 'version',
+        specSyncMode: 'version',
+        releaseLabel: 'v3.0.0'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(result['baseline-collection-id']).toBe('col-baseline-v3');
+    expect(result['smoke-collection-id']).toBe('col-smoke-v3');
+    expect(result['contract-collection-id']).toBe('col-contract-v3');
   });
 
   it('versioned runs do not emit releases-json or write releases.yaml', async () => {
