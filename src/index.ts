@@ -1122,7 +1122,9 @@ export async function runBootstrap(
     dependencies.core,
     'Build Baseline Operation Lookup',
     async () => {
-      const getCollection = dependencies.postman.getCollection;
+      const getCollection = dependencies.postman.getCollection?.bind(
+        dependencies.postman
+      );
       if (!getCollection) {
         dependencies.core.warning('Skipping baseline operation lookup because getCollection is unavailable');
         return;
@@ -1191,8 +1193,12 @@ export async function runBootstrap(
       dependencies.core,
       'Curate Flow-Driven Smoke and Contract Collections',
       async () => {
-        const getCollection = dependencies.postman.getCollection;
-        const updateCollection = dependencies.postman.updateCollection;
+        const getCollection = dependencies.postman.getCollection?.bind(
+          dependencies.postman
+        );
+        const updateCollection = dependencies.postman.updateCollection?.bind(
+          dependencies.postman
+        );
 
         if (!getCollection || !updateCollection) {
           dependencies.core.warning(
