@@ -5,6 +5,19 @@ import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
+import {
+  buildBaselineRequestCatalog,
+  buildSpecOperationCatalog,
+  matchOperationsToBaselineRequests,
+  type SpecOperationEntry
+} from './lib/flow/operation-catalog.js';
+import { compileFlowCollectionItems } from './lib/flow/flow-compiler.js';
+import { fetchFlowManifest } from './lib/flow/flow-manifest-client.js';
+import {
+  parseFlowManifest,
+  type ParsedFlowManifest,
+  validateFlowManifestAgainstSpec
+} from './lib/flow/flow-manifest.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
@@ -23,6 +36,7 @@ export interface ResolvedInputs {
   collectionSyncMode: 'reuse' | 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
   releaseLabel?: string;
+  flowManifestUrl?: string;
   domain?: string;
   domainCode?: string;
   requesterEmail?: string;
@@ -119,7 +133,8 @@ export interface BootstrapExecutionDependencies {
     | 'tagCollection'
     | 'uploadSpec'
     | 'updateSpec'
-  >;
+  > &
+    Partial<Pick<PostmanAssetsClient, 'getCollection' | 'updateCollection'>>;
   specFetcher: typeof fetch;
 }
 
@@ -241,6 +256,18 @@ export function resolveInputs(
     }
   }
 
+  const flowManifestUrl = getInput('flow-manifest-url', env) ?? '';
+  if (flowManifestUrl) {
+    try {
+      const parsedUrl = new URL(flowManifestUrl);
+      if (parsedUrl.protocol !== 'https:') {
+        throw new Error('not https');
+      }
+    } catch {
+      throw new Error(`flow-manifest-url must be a valid HTTPS URL, got: ${flowManifestUrl}`);
+    }
+  }
+
   return {
     projectName: getInput('project-name', env)
       ?? env.GITHUB_REPOSITORY?.split('/').pop()
@@ -255,6 +282,7 @@ export function resolveInputs(
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
     releaseLabel: getInput('release-label', env),
+    flowManifestUrl: getInput('flow-manifest-url', env),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
@@ -334,6 +362,7 @@ export function readActionInputs(
       optionalInput(actionCore, 'spec-sync-mode') ??
       openAlphaActionContract.inputs['spec-sync-mode'].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
+    INPUT_FLOW_MANIFEST_URL: optionalInput(actionCore, 'flow-manifest-url'),
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
@@ -869,6 +898,11 @@ export async function runBootstrap(
 
   const isSpecUpdate = Boolean(specId);
   let previousSpecContent: string | undefined;
+  let flowManifest: ParsedFlowManifest | undefined;
+  let specOperationCatalog: SpecOperationEntry[] = [];
+  let baselineOperationLookup:
+    | ReturnType<typeof matchOperationsToBaselineRequests>
+    | undefined;
 
   const specContent = await runGroup(
     dependencies.core,
@@ -897,7 +931,35 @@ export async function runBootstrap(
     }
   );
 
-  void specContent;
+  if (inputs.flowManifestUrl) {
+    await runGroup(
+      dependencies.core,
+      'Fetch and Validate Flow Manifest',
+      async () => {
+        const manifestContent = await fetchFlowManifest(
+          inputs.flowManifestUrl || '',
+          dependencies.specFetcher
+        );
+        const manifest = parseFlowManifest(manifestContent);
+        flowManifest = manifest;
+        dependencies.core.info(
+          `Validated flow manifest with ${manifest.flows.length} flow(s)`
+        );
+      }
+    );
+  }
+
+  specOperationCatalog = buildSpecOperationCatalog(specContent);
+  if (flowManifest) {
+    await runGroup(
+      dependencies.core,
+      'Validate Flow Manifest Against Spec',
+      async () => {
+        validateFlowManifestAgainstSpec(flowManifest!, specOperationCatalog);
+        dependencies.core.info('Validated flow manifest bindings against spec operations');
+      }
+    );
+  }
 
   const lintSummary = await runGroup(
     dependencies.core,
@@ -997,6 +1059,92 @@ export async function runBootstrap(
     contract: outputs['contract-collection-id'],
     smoke: outputs['smoke-collection-id']
   });
+
+  await runGroup(
+    dependencies.core,
+    'Build Baseline Operation Lookup',
+    async () => {
+      try {
+        const getCollection = dependencies.postman.getCollection;
+        if (!getCollection) {
+          dependencies.core.warning('Skipping baseline operation lookup because getCollection is unavailable');
+          return;
+        }
+
+        const baselineCollection = await getCollection(
+          outputs['baseline-collection-id']
+        );
+        const baselineRequests = buildBaselineRequestCatalog(baselineCollection);
+        const lookup = matchOperationsToBaselineRequests(
+          specOperationCatalog,
+          baselineRequests
+        );
+        baselineOperationLookup = lookup;
+
+        dependencies.core.info(
+          `Mapped ${lookup.size}/${specOperationCatalog.length} spec operations to baseline requests`
+        );
+      } catch (error) {
+        dependencies.core.warning(
+          `Failed to build baseline operation lookup: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  );
+
+  if (flowManifest) {
+    await runGroup(
+      dependencies.core,
+      'Curate Flow-Driven Smoke and Contract Collections',
+      async () => {
+        const getCollection = dependencies.postman.getCollection;
+        const updateCollection = dependencies.postman.updateCollection;
+
+        if (!getCollection || !updateCollection) {
+          dependencies.core.warning(
+            'Skipping flow-based collection curation because getCollection/updateCollection is unavailable'
+          );
+          return;
+        }
+
+        if (!baselineOperationLookup) {
+          throw new Error('Flow manifest was provided but baseline operation lookup was not built');
+        }
+
+        const specOperationMap = new Map(
+          specOperationCatalog.map((operation) => [operation.operationId, operation])
+        );
+
+        const curateType = async (
+          collectionType: 'smoke' | 'contract',
+          collectionId: string
+        ) => {
+          const curatedItems = compileFlowCollectionItems(
+            flowManifest!,
+            collectionType,
+            baselineOperationLookup!,
+            specOperationMap
+          );
+          if (curatedItems.length === 0) {
+            dependencies.core.info(
+              `No ${collectionType} flows found in flow manifest; leaving generated ${collectionType} collection unchanged`
+            );
+            return;
+          }
+
+          const collection = await getCollection(collectionId);
+          collection.item = curatedItems;
+          await updateCollection(collectionId, collection);
+          dependencies.core.info(
+            `Curated ${collectionType} collection with ${curatedItems.length} flow folder(s)`
+          );
+        };
+
+        await curateType('smoke', outputs['smoke-collection-id']);
+        await curateType('contract', outputs['contract-collection-id']);
+      }
+    );
+  }
 
   await runGroup(
     dependencies.core,

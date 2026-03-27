@@ -64,6 +64,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',
     releaseLabel: undefined,
+    flowManifestUrl: undefined,
     domain: 'core-banking',
     domainCode: 'AF',
     requesterEmail: 'owner@example.com',
@@ -224,6 +225,114 @@ describe('bootstrap action', () => {
         total: 0,
         violations: [],
         warnings: 0
+      })
+    );
+  });
+
+  it('fetches and validates flow-manifest-url when provided', async () => {
+    const { core, infos } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline';
+          if (prefix === '[Smoke]') return 'col-smoke';
+          return 'col-contract';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getCollection: vi.fn().mockResolvedValue({
+        item: [
+          {
+            name: 'Create cart',
+            request: {
+              method: 'POST',
+              url: {
+                raw: '{{baseUrl}}/cart'
+              }
+            }
+          }
+        ]
+      }),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      updateCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+      syncCollection: vi.fn().mockResolvedValue(undefined)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('flow.yaml')) {
+        return new Response(
+          `flows:
+  - name: checkout
+    type: smoke
+    steps:
+      - stepKey: create-cart-1
+        operationId: createCart
+        bindings: []
+        extract: []
+`,
+          { status: 200 }
+        );
+      }
+      return new Response(
+        `openapi: 3.1.0
+info:
+  title: demo
+  version: 1.0.0
+paths:
+  /cart:
+    post:
+      operationId: createCart
+      responses:
+        "200":
+          description: ok
+`,
+        { status: 200 }
+      );
+    });
+
+    await runBootstrap(
+      createInputs({
+        flowManifestUrl: 'https://example.test/flow.yaml'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        internalIntegration,
+        postman,
+        specFetcher
+      }
+    );
+
+    expect(specFetcher).toHaveBeenCalledWith(
+      'https://example.test/flow.yaml',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(infos).toContain('Validated flow manifest with 1 flow(s)');
+    expect(postman.updateCollection).toHaveBeenCalledWith(
+      'col-smoke',
+      expect.objectContaining({
+        item: [
+          expect.objectContaining({
+            name: 'checkout'
+          })
+        ]
       })
     );
   });

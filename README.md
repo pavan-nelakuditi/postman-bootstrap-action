@@ -221,6 +221,7 @@ steps:
 | `collection-sync-mode` | `refresh` | Collection lifecycle policy. `reuse` keeps existing collections, `refresh` regenerates the current collection set from the latest spec, and `version` creates or reuses release-scoped collections. |
 | `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
 | `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
+| `flow-manifest-url` | | Optional HTTPS URL to a `flow.yaml` manifest. When present, bootstrap validates it, keeps baseline spec-generated, and rebuilds smoke/contract collections from the flows in that manifest. |
 | `project-name` | | Service name used in workspace and asset naming. |
 | `domain` | | Business domain used for governance assignment. |
 | `domain-code` | | Short prefix used when constructing the workspace name. |
@@ -270,6 +271,27 @@ After collections exist, bootstrap links them to the cloud specification and tri
 - `sync-examples: true` (default) enables example syncing in that relation setup.
 - `sync-examples: false` keeps the relation but disables example syncing.
 - If `postman-access-token` is missing, bootstrap warns and skips the cloud link/sync step.
+
+### Flow manifest curation
+
+When `flow-manifest-url` is provided, bootstrap keeps the three-collection model but changes how smoke and contract are assembled:
+
+- baseline remains the raw spec-generated reference collection
+- smoke is rebuilt from all `type: smoke` flows in `flow.yaml`
+- contract is rebuilt from all `type: contract` flows in `flow.yaml`
+
+Each flow becomes a folder in the curated target collection. Requests inside each folder are cloned from the generated baseline collection so Postman-native request shapes stay intact.
+
+Current compiler behavior:
+
+- matches manifest `operationId` values to baseline requests using `method + normalized path`
+- validates binding fields against the OpenAPI spec before collection updates
+- supports `example`, `literal`, and `prior_output` bindings
+- applies bindings to path, query, header, and JSON body fields
+- supports nested JSON body paths like `customer.profile.id`
+- adds response extract scripts without removing those extracts during smoke/contract test injection
+
+If the manifest includes only smoke flows or only contract flows, bootstrap curates only that collection type and leaves the other generated collection unchanged.
 
 ### Contract smoke monitoring
 

@@ -32,6 +32,9 @@ inputs:
   release-label:
     description: Optional release label used for versioned specs and collections
     required: false
+  flow-manifest-url:
+    description: Optional HTTPS URL to a flow.yaml manifest used for curated smoke and contract flows
+    required: false
   project-name:
     description: Service project name
     required: true

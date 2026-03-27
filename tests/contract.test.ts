@@ -67,6 +67,9 @@ describe('open-alpha action contract', () => {
     expect(actionManifest.inputs['spec-sync-mode'].default).toBe('update');
     expect(resolveInputs({}).specSyncMode).toBe('update');
 
+    expect(openAlphaActionContract.inputs['flow-manifest-url']).toBeDefined();
+    expect(actionManifest.inputs['flow-manifest-url']).toBeDefined();
+
   });
 
   it('rejects unsupported integration backends during input resolution', () => {
@@ -83,6 +86,14 @@ describe('open-alpha action contract', () => {
         'INPUT_SPEC_URL': 'http://example.com/spec.yaml'
       })
     ).toThrow(/spec-url must be a valid HTTPS URL/);
+  });
+
+  it('rejects non-HTTPS flow manifest URLs', () => {
+    expect(() =>
+      resolveInputs({
+        INPUT_FLOW_MANIFEST_URL: 'http://example.com/flow.yaml'
+      })
+    ).toThrow(/flow-manifest-url must be a valid HTTPS URL/);
   });
 
   it('documents the retained bootstrap steps and removed internal-only behavior', () => {

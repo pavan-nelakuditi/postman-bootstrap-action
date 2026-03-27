@@ -28579,7 +28579,7 @@ var require_public_api = __commonJS({
       }
       return doc;
     }
-    function parse2(src, reviver, options) {
+    function parse4(src, reviver, options) {
       let _reviver = void 0;
       if (typeof reviver === "function") {
         _reviver = reviver;
@@ -28620,7 +28620,7 @@ var require_public_api = __commonJS({
         return value.toString(options);
       return new Document.Document(value, _replacer, options).toString(options);
     }
-    exports2.parse = parse2;
+    exports2.parse = parse4;
     exports2.parseAllDocuments = parseAllDocuments;
     exports2.parseDocument = parseDocument;
     exports2.stringify = stringify2;
@@ -28701,7 +28701,7 @@ var core = __toESM(require_core(), 1);
 var exec = __toESM(require_exec(), 1);
 var io = __toESM(require_io(), 1);
 var import_node_fs = require("node:fs");
-var import_yaml = __toESM(require_dist(), 1);
+var import_yaml3 = __toESM(require_dist(), 1);
 
 // src/contracts.ts
 var openAlphaActionContract = {
@@ -28748,6 +28748,10 @@ var openAlphaActionContract = {
     },
     "release-label": {
       description: "Optional release label. When omitted for versioned sync, the action derives one from GitHub ref metadata.",
+      required: false
+    },
+    "flow-manifest-url": {
+      description: "Optional HTTPS URL to a flow.yaml manifest used to curate smoke and contract collections.",
       required: false
     },
     "project-name": {
@@ -28851,6 +28855,554 @@ var openAlphaActionContract = {
 };
 var contractInputNames = Object.keys(openAlphaActionContract.inputs);
 var contractOutputNames = Object.keys(openAlphaActionContract.outputs);
+
+// src/lib/flow/operation-catalog.ts
+var import_yaml = __toESM(require_dist(), 1);
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseSpecDocument(specContent) {
+  const trimmed = specContent.trimStart();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return JSON.parse(specContent);
+  }
+  return (0, import_yaml.parse)(specContent) ?? {};
+}
+function resolveRef(document, ref) {
+  if (!ref.startsWith("#/")) {
+    return void 0;
+  }
+  return ref.slice(2).split("/").reduce((current, segment) => {
+    if (!isObject(current)) return void 0;
+    return current[segment];
+  }, document);
+}
+function resolveSchema(document, schema) {
+  if (!isObject(schema)) {
+    return void 0;
+  }
+  if (typeof schema.$ref === "string") {
+    return resolveRef(document, schema.$ref);
+  }
+  return schema;
+}
+function mergeInputTargets(target, names, bindingTarget) {
+  names.forEach((name) => {
+    if (name && !target[name]) {
+      target[name] = bindingTarget;
+    }
+  });
+}
+function extractParameterTargets(document, parameters, target) {
+  if (!Array.isArray(parameters)) {
+    return;
+  }
+  parameters.forEach((entry) => {
+    const parameter = isObject(entry) && typeof entry.$ref === "string" ? resolveRef(document, entry.$ref) : entry;
+    if (!isObject(parameter)) {
+      return;
+    }
+    const name = typeof parameter.name === "string" ? parameter.name.trim() : "";
+    const location = parameter.in;
+    if (!name || location !== "path" && location !== "query" && location !== "header") {
+      return;
+    }
+    target[name] = location;
+  });
+}
+function collectBodyPropertyNames(document, schema, names) {
+  const resolved = resolveSchema(document, schema);
+  if (!isObject(resolved)) {
+    return;
+  }
+  if (isObject(resolved.properties)) {
+    Object.keys(resolved.properties).forEach((key) => {
+      if (key.trim()) {
+        names.add(key);
+      }
+    });
+  }
+  if (Array.isArray(resolved.allOf)) {
+    resolved.allOf.forEach((part) => collectBodyPropertyNames(document, part, names));
+  }
+}
+function extractBodyTargets(document, requestBody, target) {
+  const resolvedRequestBody = isObject(requestBody) && typeof requestBody.$ref === "string" ? resolveRef(document, requestBody.$ref) : requestBody;
+  if (!isObject(resolvedRequestBody) || !isObject(resolvedRequestBody.content)) {
+    return;
+  }
+  const jsonContent = resolvedRequestBody.content["application/json"] ?? resolvedRequestBody.content["application/*+json"];
+  if (!isObject(jsonContent)) {
+    return;
+  }
+  const bodyFieldNames = /* @__PURE__ */ new Set();
+  collectBodyPropertyNames(document, jsonContent.schema, bodyFieldNames);
+  mergeInputTargets(target, Array.from(bodyFieldNames), "body");
+}
+function canonicalizePath(path2) {
+  return String(path2 || "").replace(/:([A-Za-z0-9_]+)/g, "{$1}").replace(/\/+$/, "").replace(/^$/, "/");
+}
+function buildSpecOperationCatalog(specContent) {
+  const document = parseSpecDocument(specContent);
+  const paths = isObject(document.paths) ? document.paths : {};
+  const operations = [];
+  for (const [path2, pathItem] of Object.entries(paths)) {
+    if (!isObject(pathItem)) continue;
+    const pathLevelParameters = pathItem.parameters;
+    for (const [method, operation] of Object.entries(pathItem)) {
+      if (!isObject(operation)) continue;
+      const normalizedMethod = method.toUpperCase();
+      const operationId = typeof operation.operationId === "string" ? operation.operationId.trim() : "";
+      if (!operationId) continue;
+      const inputTargets = {};
+      extractParameterTargets(document, pathLevelParameters, inputTargets);
+      extractParameterTargets(document, operation.parameters, inputTargets);
+      extractBodyTargets(document, operation.requestBody, inputTargets);
+      operations.push({
+        canonicalPath: canonicalizePath(path2),
+        inputTargets,
+        method: normalizedMethod,
+        operationId,
+        path: path2
+      });
+    }
+  }
+  return operations;
+}
+function collectCollectionItems(node) {
+  if (!isObject(node)) return [];
+  const items = [];
+  if (isObject(node.request)) {
+    items.push(node);
+  }
+  if (Array.isArray(node.item)) {
+    for (const child of node.item) {
+      items.push(...collectCollectionItems(child));
+    }
+  }
+  return items;
+}
+function extractRequestPath(url) {
+  if (typeof url === "string") {
+    try {
+      return new URL(url).pathname || url;
+    } catch {
+      return url;
+    }
+  }
+  if (isObject(url)) {
+    if (typeof url.raw === "string") {
+      const rawValue = url.raw.trim();
+      const strippedBaseVariable = rawValue.replace(/^\{\{[^}]+\}\}/, "");
+      const raw = strippedBaseVariable.replace(/\{\{[^}]+\}\}/g, "example");
+      try {
+        return new URL(raw).pathname || raw;
+      } catch {
+        const withoutQuery = raw.split("?")[0] ?? raw;
+        return withoutQuery.startsWith("/") ? withoutQuery : `/${withoutQuery.replace(/^\/+/, "")}`;
+      }
+    }
+    if (Array.isArray(url.path)) {
+      return `/${url.path.map((segment) => String(segment)).join("/")}`;
+    }
+  }
+  return "";
+}
+function buildBaselineRequestCatalog(collection) {
+  const items = collectCollectionItems(collection);
+  return items.flatMap((item) => {
+    const request = isObject(item.request) ? item.request : void 0;
+    if (!request) return [];
+    const method = typeof request.method === "string" ? request.method.toUpperCase() : "";
+    const path2 = extractRequestPath(request.url);
+    if (!method || !path2) return [];
+    return [
+      {
+        canonicalPath: canonicalizePath(path2),
+        item,
+        itemName: typeof item.name === "string" ? item.name : "",
+        method,
+        path: path2
+      }
+    ];
+  });
+}
+function matchOperationsToBaselineRequests(specOperations, baselineRequests) {
+  const baselineByKey = /* @__PURE__ */ new Map();
+  baselineRequests.forEach((request) => {
+    baselineByKey.set(`${request.method} ${request.canonicalPath}`, request);
+  });
+  const matches = /* @__PURE__ */ new Map();
+  specOperations.forEach((operation) => {
+    const key = `${operation.method} ${operation.canonicalPath}`;
+    const request = baselineByKey.get(key);
+    if (request) {
+      matches.set(operation.operationId, request);
+    }
+  });
+  return matches;
+}
+
+// src/lib/flow/flow-compiler.ts
+function cloneItem(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function setRequestDescription(item, stepKey, operationId) {
+  const request = item.request;
+  if (!request || typeof request !== "object") {
+    return;
+  }
+  const marker = `Generated from flow step ${stepKey} (operationId: ${operationId})`;
+  const currentDescription = typeof request.description === "string" ? request.description : typeof request.description?.content === "string" ? request.description.content : "";
+  const nextDescription = currentDescription ? `${currentDescription}
+
+${marker}` : marker;
+  request.description = nextDescription;
+}
+function replaceRawPathSegment(raw, fieldKey, nextValue) {
+  return raw.replace(new RegExp(`:${fieldKey}(?=([/?#&]|$))`, "g"), nextValue).replace(new RegExp(`\\{${fieldKey}\\}`, "g"), nextValue);
+}
+function setNestedBodyValue(body, fieldKey, nextValue) {
+  const segments = fieldKey.split(".").filter(Boolean);
+  if (segments.length === 0) {
+    return;
+  }
+  let current = body;
+  segments.slice(0, -1).forEach((segment) => {
+    const existing = current[segment];
+    if (typeof existing !== "object" || existing === null || Array.isArray(existing)) {
+      current[segment] = {};
+    }
+    current = current[segment];
+  });
+  current[segments[segments.length - 1]] = nextValue;
+}
+function setStructuredRequestValue(request, fieldKey, nextValue, target) {
+  let applied = false;
+  const url = request.url;
+  if (target === "path" && url && typeof url === "object") {
+    if (typeof url.raw === "string") {
+      const replaced = replaceRawPathSegment(url.raw, fieldKey, nextValue);
+      if (replaced !== url.raw) {
+        url.raw = replaced;
+        applied = true;
+      }
+    }
+    if (Array.isArray(url.path)) {
+      url.path = url.path.map((segment) => {
+        if (typeof segment !== "string") return segment;
+        if (segment === `:${fieldKey}` || segment === `{${fieldKey}}`) {
+          applied = true;
+          return nextValue;
+        }
+        return segment;
+      });
+    }
+    if (Array.isArray(url.variable)) {
+      url.variable.forEach((entry) => {
+        if (entry?.key === fieldKey) {
+          entry.value = nextValue;
+          applied = true;
+        }
+      });
+    }
+  }
+  if (target === "query" && url && typeof url === "object") {
+    if (Array.isArray(url.query)) {
+      url.query.forEach((entry) => {
+        if (entry?.key === fieldKey) {
+          entry.value = nextValue;
+          applied = true;
+        }
+      });
+    } else {
+      url.query = [];
+    }
+    if (!applied && Array.isArray(url.query)) {
+      url.query.push({
+        key: fieldKey,
+        value: nextValue
+      });
+      applied = true;
+    }
+  }
+  if (target === "header") {
+    if (!Array.isArray(request.header)) {
+      request.header = [];
+    }
+    request.header.forEach((entry) => {
+      if (String(entry?.key || "").toLowerCase() === fieldKey.toLowerCase()) {
+        entry.value = nextValue;
+        applied = true;
+      }
+    });
+    if (!applied) {
+      request.header.push({
+        key: fieldKey,
+        value: nextValue
+      });
+      applied = true;
+    }
+  }
+  const body = request.body;
+  if (target === "body") {
+    if (!body) {
+      request.body = {
+        mode: "raw",
+        raw: "{}",
+        options: {
+          raw: {
+            language: "json"
+          }
+        }
+      };
+    }
+    const currentBody = request.body;
+    if (currentBody?.mode === "raw" && typeof currentBody.raw === "string") {
+      try {
+        const parsed = JSON.parse(currentBody.raw || "{}");
+        setNestedBodyValue(parsed, fieldKey, nextValue);
+        currentBody.raw = JSON.stringify(parsed, null, 2);
+        applied = true;
+      } catch {
+      }
+    }
+  }
+  return applied;
+}
+function addFlowExtracts(item, extracts) {
+  if (extracts.length === 0) {
+    return;
+  }
+  const exec2 = [
+    "// [FlowExtract] Auto-generated response extractors",
+    "(function () {",
+    "  let data;",
+    "  try {",
+    "    data = pm.response.json();",
+    "  } catch (error) {",
+    "    return;",
+    "  }",
+    "  const readPath = (input, path) => {",
+    "    const tokens = path.replace(/^\\$\\./, '').match(/[^.[\\]]+|\\[(\\d+)\\]/g) || [];",
+    "    let current = input;",
+    "    for (const token of tokens) {",
+    "      const normalized = token.startsWith('[') ? token.slice(1, -1) : token;",
+    "      if (current == null) return undefined;",
+    "      current = current[normalized];",
+    "    }",
+    "    return current;",
+    "  };"
+  ];
+  extracts.forEach((extract) => {
+    exec2.push(
+      `  {`,
+      `    const value = readPath(data, ${JSON.stringify(extract.jsonPath)});`,
+      "    if (value !== undefined) {",
+      `      pm.collectionVariables.set(${JSON.stringify(extract.variable)}, typeof value === 'string' ? value : JSON.stringify(value));`,
+      "    }",
+      "  }"
+    );
+  });
+  exec2.push("})();");
+  item.event = Array.isArray(item.event) ? item.event : [];
+  item.event.push({
+    listen: "test",
+    script: {
+      type: "text/javascript",
+      exec: exec2
+    }
+  });
+}
+function compileFlowCollectionItems(manifest, type, operationLookup, specOperationMap) {
+  return manifest.flows.filter((flow) => flow.type === type).map((flow) => ({
+    name: flow.name,
+    item: flow.steps.map((step) => {
+      const template = operationLookup.get(step.operationId);
+      if (!template) {
+        throw new Error(
+          `Unable to resolve operationId "${step.operationId}" from baseline collection for flow "${flow.name}"`
+        );
+      }
+      const operation = specOperationMap.get(step.operationId);
+      if (!operation) {
+        throw new Error(
+          `Unable to resolve operation metadata for "${step.operationId}" in flow "${flow.name}"`
+        );
+      }
+      const item = cloneItem(template.item);
+      setRequestDescription(item, step.stepKey, step.operationId);
+      const request = item.request ?? {};
+      for (const binding of step.bindings ?? []) {
+        if (binding.source === "example") {
+          continue;
+        }
+        const nextValue = binding.source === "literal" ? binding.value ?? "" : `{{${binding.variable ?? ""}}}`;
+        setStructuredRequestValue(
+          request,
+          binding.fieldKey,
+          nextValue,
+          operation.inputTargets[binding.fieldKey]
+        );
+      }
+      addFlowExtracts(item, step.extract ?? []);
+      return item;
+    })
+  }));
+}
+
+// src/lib/flow/flow-manifest-client.ts
+async function fetchFlowManifest(url, fetchImpl) {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/yaml, text/yaml, text/plain, application/x-yaml, */*"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch flow manifest (${response.status} ${response.statusText})`);
+  }
+  return response.text();
+}
+
+// src/lib/flow/flow-manifest.ts
+var import_yaml2 = __toESM(require_dist(), 1);
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseFlowManifest(content) {
+  const parsed = (0, import_yaml2.parse)(content);
+  if (!isObject2(parsed)) {
+    throw new Error("Flow manifest must be a YAML object");
+  }
+  if (!Array.isArray(parsed.flows)) {
+    throw new Error("Flow manifest must contain a flows array");
+  }
+  const flows = parsed.flows.map((flow, flowIndex) => {
+    if (!isObject2(flow)) {
+      throw new Error(`Flow at index ${flowIndex} must be an object`);
+    }
+    if (typeof flow.name !== "string" || !flow.name.trim()) {
+      throw new Error(`Flow at index ${flowIndex} is missing a name`);
+    }
+    if (flow.type !== "smoke" && flow.type !== "contract") {
+      throw new Error(`Flow "${flow.name}" has an unsupported type`);
+    }
+    if (!Array.isArray(flow.steps)) {
+      throw new Error(`Flow "${flow.name}" must contain a steps array`);
+    }
+    return {
+      name: flow.name,
+      type: flow.type,
+      steps: flow.steps.map((step, stepIndex) => {
+        if (!isObject2(step)) {
+          throw new Error(`Step ${stepIndex + 1} in flow "${flow.name}" must be an object`);
+        }
+        if (typeof step.stepKey !== "string" || !step.stepKey.trim()) {
+          throw new Error(`Step ${stepIndex + 1} in flow "${flow.name}" is missing stepKey`);
+        }
+        if (typeof step.operationId !== "string" || !step.operationId.trim()) {
+          throw new Error(`Step ${step.stepKey} in flow "${flow.name}" is missing operationId`);
+        }
+        if (step.bindings && !Array.isArray(step.bindings)) {
+          throw new Error(`Step ${step.stepKey} in flow "${flow.name}" has invalid bindings`);
+        }
+        if (step.extract && !Array.isArray(step.extract)) {
+          throw new Error(`Step ${step.stepKey} in flow "${flow.name}" has invalid extract rules`);
+        }
+        return {
+          stepKey: step.stepKey,
+          operationId: step.operationId,
+          bindings: Array.isArray(step.bindings) ? step.bindings.map((binding, bindingIndex) => {
+            if (!isObject2(binding)) {
+              throw new Error(`Binding ${bindingIndex + 1} on step ${step.stepKey} must be an object`);
+            }
+            if (typeof binding.fieldKey !== "string" || !binding.fieldKey.trim()) {
+              throw new Error(`Binding ${bindingIndex + 1} on step ${step.stepKey} is missing fieldKey`);
+            }
+            if (binding.source !== "example" && binding.source !== "literal" && binding.source !== "prior_output") {
+              throw new Error(`Binding ${binding.fieldKey} on step ${step.stepKey} has invalid source`);
+            }
+            return {
+              fieldKey: binding.fieldKey,
+              source: binding.source,
+              ...typeof binding.value === "string" ? { value: binding.value } : {},
+              ...typeof binding.sourceStepKey === "string" ? { sourceStepKey: binding.sourceStepKey } : {},
+              ...typeof binding.variable === "string" ? { variable: binding.variable } : {}
+            };
+          }) : [],
+          extract: Array.isArray(step.extract) ? step.extract.map((extract, extractIndex) => {
+            if (!isObject2(extract)) {
+              throw new Error(`Extract ${extractIndex + 1} on step ${step.stepKey} must be an object`);
+            }
+            if (typeof extract.variable !== "string" || !extract.variable.trim()) {
+              throw new Error(`Extract ${extractIndex + 1} on step ${step.stepKey} is missing variable`);
+            }
+            if (typeof extract.jsonPath !== "string" || !extract.jsonPath.trim()) {
+              throw new Error(`Extract ${extractIndex + 1} on step ${step.stepKey} is missing jsonPath`);
+            }
+            return {
+              variable: extract.variable,
+              jsonPath: extract.jsonPath
+            };
+          }) : []
+        };
+      })
+    };
+  });
+  return {
+    ...isObject2(parsed.spec) ? { spec: parsed.spec } : {},
+    flows
+  };
+}
+function validateFlowManifestAgainstSpec(manifest, specOperations) {
+  const operationMap = new Map(specOperations.map((operation) => [operation.operationId, operation]));
+  manifest.flows.forEach((flow) => {
+    const extractedVariablesByStep = /* @__PURE__ */ new Map();
+    flow.steps.forEach((step) => {
+      const operation = operationMap.get(step.operationId);
+      if (!operation) {
+        throw new Error(
+          `Flow "${flow.name}" references unknown operationId "${step.operationId}"`
+        );
+      }
+      for (const binding of step.bindings ?? []) {
+        if (!operation.inputTargets[binding.fieldKey]) {
+          throw new Error(
+            `Flow "${flow.name}" step "${step.stepKey}" binds unknown field "${binding.fieldKey}" for operation "${step.operationId}"`
+          );
+        }
+        if (binding.source === "literal" && typeof binding.value !== "string") {
+          throw new Error(
+            `Flow "${flow.name}" step "${step.stepKey}" binding "${binding.fieldKey}" requires a literal value`
+          );
+        }
+        if (binding.source === "prior_output") {
+          if (!binding.sourceStepKey || !binding.variable) {
+            throw new Error(
+              `Flow "${flow.name}" step "${step.stepKey}" prior_output binding "${binding.fieldKey}" requires sourceStepKey and variable`
+            );
+          }
+          const availableVariables = extractedVariablesByStep.get(binding.sourceStepKey);
+          if (!availableVariables) {
+            throw new Error(
+              `Flow "${flow.name}" step "${step.stepKey}" references unknown prior step "${binding.sourceStepKey}"`
+            );
+          }
+          if (!availableVariables.has(binding.variable)) {
+            throw new Error(
+              `Flow "${flow.name}" step "${step.stepKey}" references missing extracted variable "${binding.variable}" from step "${binding.sourceStepKey}"`
+            );
+          }
+        }
+      }
+      extractedVariablesByStep.set(
+        step.stepKey,
+        new Set((step.extract ?? []).map((extract) => extract.variable))
+      );
+    });
+  });
+}
 
 // src/lib/secrets.ts
 var REDACTED = "[REDACTED]";
@@ -29532,14 +30084,19 @@ var PostmanAssetsClient = class {
         }
       ]
     };
+    const autoGeneratedMarker = type === "smoke" ? "// [Smoke] Auto-generated test assertions" : "// [Contract] Auto-generated contract test assertions";
     const injectScripts = (itemNode) => {
       if (itemNode.name === "00 - Resolve Secrets") {
         return;
       }
       if (itemNode.request) {
-        itemNode.event = (itemNode.event || []).filter(
-          (entry) => entry.listen !== "test"
-        );
+        itemNode.event = (itemNode.event || []).filter((entry) => {
+          if (entry.listen !== "test") {
+            return true;
+          }
+          const exec2 = entry?.script?.exec;
+          return !Array.isArray(exec2) || !exec2.includes(autoGeneratedMarker);
+        });
         itemNode.event.push({
           listen: "test",
           script: {
@@ -29561,6 +30118,12 @@ var PostmanAssetsClient = class {
       collection.item = [];
     }
     collection.item.unshift(request0Item);
+    await this.request(`/collections/${collectionUid}`, {
+      method: "PUT",
+      body: JSON.stringify({ collection })
+    });
+  }
+  async updateCollection(collectionUid, collection) {
     await this.request(`/collections/${collectionUid}`, {
       method: "PUT",
       body: JSON.stringify({ collection })
@@ -30098,6 +30661,17 @@ function resolveInputs(env = process.env) {
       throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`);
     }
   }
+  const flowManifestUrl = getInput("flow-manifest-url", env) ?? "";
+  if (flowManifestUrl) {
+    try {
+      const parsedUrl = new URL(flowManifestUrl);
+      if (parsedUrl.protocol !== "https:") {
+        throw new Error("not https");
+      }
+    } catch {
+      throw new Error(`flow-manifest-url must be a valid HTTPS URL, got: ${flowManifestUrl}`);
+    }
+  }
   return {
     projectName: getInput("project-name", env) ?? env.GITHUB_REPOSITORY?.split("/").pop() ?? env.CI_PROJECT_NAME ?? "",
     workspaceId: getInput("workspace-id", env),
@@ -30109,6 +30683,7 @@ function resolveInputs(env = process.env) {
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
+    flowManifestUrl: getInput("flow-manifest-url", env),
     domain: getInput("domain", env),
     domainCode: getInput("domain-code", env),
     requesterEmail: getInput("requester-email", env),
@@ -30169,6 +30744,7 @@ function readActionInputs(actionCore) {
     INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? openAlphaActionContract.inputs["collection-sync-mode"].default,
     INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? openAlphaActionContract.inputs["spec-sync-mode"].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, "release-label"),
+    INPUT_FLOW_MANIFEST_URL: optionalInput(actionCore, "flow-manifest-url"),
     INPUT_DOMAIN: optionalInput(actionCore, "domain"),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, "domain-code"),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, "requester-email"),
@@ -30280,7 +30856,7 @@ function createAssetProjectName(inputs, releaseLabel) {
 }
 function readResourcesState() {
   try {
-    return (0, import_yaml.parse)((0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8"));
+    return (0, import_yaml3.parse)((0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8"));
   } catch {
     return null;
   }
@@ -30318,7 +30894,7 @@ function normalizeSpecDocument(raw, warn) {
       doc = JSON.parse(raw);
       asJson = true;
     } else {
-      doc = (0, import_yaml.parse)(raw);
+      doc = (0, import_yaml3.parse)(raw);
     }
   } catch {
     warn("Spec normalization skipped: document is not valid JSON or YAML.");
@@ -30364,7 +30940,7 @@ function normalizeSpecDocument(raw, warn) {
   }
   if (!changed) return raw;
   return asJson ? `${JSON.stringify(doc, null, 2)}
-` : `${(0, import_yaml.stringify)(doc, { lineWidth: 0 })}
+` : `${(0, import_yaml3.stringify)(doc, { lineWidth: 0 })}
 `;
 }
 function validateSpecStructure(content) {
@@ -30373,7 +30949,7 @@ function validateSpecStructure(content) {
     parsed = JSON.parse(content);
   } catch {
     try {
-      parsed = (0, import_yaml.parse)(content);
+      parsed = (0, import_yaml3.parse)(content);
     } catch {
       throw new Error("Spec content is not valid JSON or YAML");
     }
@@ -30598,6 +31174,9 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
   }
   const isSpecUpdate = Boolean(specId);
   let previousSpecContent;
+  let flowManifest;
+  let specOperationCatalog = [];
+  let baselineOperationLookup;
   const specContent = await runGroup(
     dependencies.core,
     specId ? "Update Spec in Spec Hub" : "Upload Spec to Spec Hub",
@@ -30625,7 +31204,34 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       return document;
     }
   );
-  void specContent;
+  if (inputs.flowManifestUrl) {
+    await runGroup(
+      dependencies.core,
+      "Fetch and Validate Flow Manifest",
+      async () => {
+        const manifestContent = await fetchFlowManifest(
+          inputs.flowManifestUrl || "",
+          dependencies.specFetcher
+        );
+        const manifest = parseFlowManifest(manifestContent);
+        flowManifest = manifest;
+        dependencies.core.info(
+          `Validated flow manifest with ${manifest.flows.length} flow(s)`
+        );
+      }
+    );
+  }
+  specOperationCatalog = buildSpecOperationCatalog(specContent);
+  if (flowManifest) {
+    await runGroup(
+      dependencies.core,
+      "Validate Flow Manifest Against Spec",
+      async () => {
+        validateFlowManifestAgainstSpec(flowManifest, specOperationCatalog);
+        dependencies.core.info("Validated flow manifest bindings against spec operations");
+      }
+    );
+  }
   const lintSummary = await runGroup(
     dependencies.core,
     "Lint Spec via Postman CLI",
@@ -30708,6 +31314,79 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     contract: outputs["contract-collection-id"],
     smoke: outputs["smoke-collection-id"]
   });
+  await runGroup(
+    dependencies.core,
+    "Build Baseline Operation Lookup",
+    async () => {
+      try {
+        const getCollection = dependencies.postman.getCollection;
+        if (!getCollection) {
+          dependencies.core.warning("Skipping baseline operation lookup because getCollection is unavailable");
+          return;
+        }
+        const baselineCollection = await getCollection(
+          outputs["baseline-collection-id"]
+        );
+        const baselineRequests = buildBaselineRequestCatalog(baselineCollection);
+        const lookup = matchOperationsToBaselineRequests(
+          specOperationCatalog,
+          baselineRequests
+        );
+        baselineOperationLookup = lookup;
+        dependencies.core.info(
+          `Mapped ${lookup.size}/${specOperationCatalog.length} spec operations to baseline requests`
+        );
+      } catch (error) {
+        dependencies.core.warning(
+          `Failed to build baseline operation lookup: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  );
+  if (flowManifest) {
+    await runGroup(
+      dependencies.core,
+      "Curate Flow-Driven Smoke and Contract Collections",
+      async () => {
+        const getCollection = dependencies.postman.getCollection;
+        const updateCollection = dependencies.postman.updateCollection;
+        if (!getCollection || !updateCollection) {
+          dependencies.core.warning(
+            "Skipping flow-based collection curation because getCollection/updateCollection is unavailable"
+          );
+          return;
+        }
+        if (!baselineOperationLookup) {
+          throw new Error("Flow manifest was provided but baseline operation lookup was not built");
+        }
+        const specOperationMap = new Map(
+          specOperationCatalog.map((operation) => [operation.operationId, operation])
+        );
+        const curateType = async (collectionType, collectionId) => {
+          const curatedItems = compileFlowCollectionItems(
+            flowManifest,
+            collectionType,
+            baselineOperationLookup,
+            specOperationMap
+          );
+          if (curatedItems.length === 0) {
+            dependencies.core.info(
+              `No ${collectionType} flows found in flow manifest; leaving generated ${collectionType} collection unchanged`
+            );
+            return;
+          }
+          const collection = await getCollection(collectionId);
+          collection.item = curatedItems;
+          await updateCollection(collectionId, collection);
+          dependencies.core.info(
+            `Curated ${collectionType} collection with ${curatedItems.length} flow folder(s)`
+          );
+        };
+        await curateType("smoke", outputs["smoke-collection-id"]);
+        await curateType("contract", outputs["contract-collection-id"]);
+      }
+    );
+  }
   await runGroup(
     dependencies.core,
     "Inject Test Scripts",

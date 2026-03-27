@@ -68,6 +68,11 @@ export const openAlphaActionContract: BetaActionContract = {
         'Optional release label. When omitted for versioned sync, the action derives one from GitHub ref metadata.',
       required: false
     },
+    'flow-manifest-url': {
+      description:
+        'Optional HTTPS URL to a flow.yaml manifest used to curate smoke and contract collections.',
+      required: false
+    },
     'project-name': {
       description: 'Service project name.',
       required: true
