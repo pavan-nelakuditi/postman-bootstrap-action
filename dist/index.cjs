@@ -29770,6 +29770,17 @@ var PostmanAssetsClient = class {
       type: String(w.type ?? "team")
     })) : [];
   }
+  async workspaceExists(workspaceId) {
+    try {
+      await this.request(`/workspaces/${workspaceId}`);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return false;
+      }
+      throw error;
+    }
+  }
   async findWorkspacesByName(name) {
     const workspaces = await this.listWorkspaces();
     return workspaces.filter((w) => w.name === name).sort((a, b) => a.id.localeCompare(b.id)).map((w) => ({ id: w.id, name: w.name }));
@@ -31127,7 +31138,22 @@ async function runBootstrap(inputs, dependencies) {
       workspaceId = void 0;
     }
   } else if (workspaceId) {
-    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+    if (dependencies.postman.workspaceExists) {
+      const exists = await runGroup(
+        dependencies.core,
+        "Verify Existing Workspace",
+        async () => dependencies.postman.workspaceExists(workspaceId || "")
+      );
+      if (!exists) {
+        dependencies.core.warning(
+          `Stored workspace ${workspaceId} was not found in Postman; creating a new workspace instead.`
+        );
+        workspaceId = void 0;
+      }
+    }
+    if (workspaceId) {
+      dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+    }
   }
   let workspaceTeamId;
   if (inputs.workspaceTeamId) {

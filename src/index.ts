@@ -134,7 +134,7 @@ export interface BootstrapExecutionDependencies {
     | 'uploadSpec'
     | 'updateSpec'
   > &
-    Partial<Pick<PostmanAssetsClient, 'getCollection' | 'updateCollection'>>;
+    Partial<Pick<PostmanAssetsClient, 'getCollection' | 'updateCollection' | 'workspaceExists'>>;
   specFetcher: typeof fetch;
 }
 
@@ -797,7 +797,24 @@ export async function runBootstrap(
       workspaceId = undefined;
     }
   } else if (workspaceId) {
-    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+    if (dependencies.postman.workspaceExists) {
+      const exists = await runGroup(
+        dependencies.core,
+        'Verify Existing Workspace',
+        async () => dependencies.postman.workspaceExists!(workspaceId || '')
+      );
+
+      if (!exists) {
+        dependencies.core.warning(
+          `Stored workspace ${workspaceId} was not found in Postman; creating a new workspace instead.`
+        );
+        workspaceId = undefined;
+      }
+    }
+
+    if (workspaceId) {
+      dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+    }
   }
 
   // Parse workspace-team-id from already-resolved inputs

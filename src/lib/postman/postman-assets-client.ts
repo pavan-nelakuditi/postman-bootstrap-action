@@ -224,6 +224,18 @@ export class PostmanAssetsClient {
       : [];
   }
 
+  async workspaceExists(workspaceId: string): Promise<boolean> {
+    try {
+      await this.request(`/workspaces/${workspaceId}`);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async findWorkspacesByName(name: string): Promise<Array<{ id: string; name: string }>> {
     const workspaces = await this.listWorkspaces();
     return workspaces

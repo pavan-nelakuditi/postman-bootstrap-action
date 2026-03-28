@@ -591,6 +591,64 @@ paths:
     });
   });
 
+  it('recreates a stored workspace when the resolved workspace id no longer exists', async () => {
+    const { core, infos, warnings, outputs } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    mkdirSync('.postman', { recursive: true });
+    writeFileSync(
+      '.postman/resources.yaml',
+      stringifyYaml({
+        workspace: {
+          id: 'ws-stale'
+        }
+      })
+    );
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline';
+          if (prefix === '[Smoke]') return 'col-smoke';
+          return 'col-contract';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getSpecContent: vi.fn().mockResolvedValue(undefined),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      workspaceExists: vi.fn().mockResolvedValue(false)
+    };
+
+    const result = await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman,
+      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response('openapi: 3.1.0', { status: 200 })
+      )
+    });
+
+    expect(postman.workspaceExists).toHaveBeenCalledWith('ws-stale');
+    expect(postman.createWorkspace).toHaveBeenCalled();
+    expect(postman.uploadSpec).toHaveBeenCalledWith('ws-new', expect.any(String), 'openapi: 3.1.0');
+    expect(warnings).toContain(
+      'Stored workspace ws-stale was not found in Postman; creating a new workspace instead.'
+    );
+    expect(infos).toContain('Resolved workspace-id from .postman/resources.yaml');
+    expect(infos).not.toContain('Using existing workspace: ws-stale');
+    expect(result['workspace-id']).toBe('ws-new');
+    expect(outputs['workspace-id']).toBe('ws-new');
+  });
+
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
