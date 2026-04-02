@@ -113,6 +113,36 @@ describe('PostmanAssetsClient', () => {
     await expect(client.getSpecContent('spec-123')).resolves.toBeUndefined();
   });
 
+  it('deletes collections successfully', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, { status: 204 })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.deleteCollection('col-123')).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.getpostman.com/collections/col-123',
+      expect.objectContaining({
+        method: 'DELETE'
+      })
+    );
+  });
+
+  it('treats collection delete 404 as success', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('not found', { status: 404 })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.deleteCollection('col-missing')).resolves.toBeUndefined();
+  });
+
   it('creates a workspace with targetTeamId in the payload for org-mode', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

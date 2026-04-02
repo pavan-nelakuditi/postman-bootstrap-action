@@ -816,6 +816,26 @@ export class PostmanAssetsClient {
     return response?.collection;
   }
 
+  async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
+    await this.request(`/collections/${collectionUid}`, {
+      method: 'PUT',
+      body: JSON.stringify({ collection })
+    });
+  }
+
+  async deleteCollection(collectionUid: string): Promise<void> {
+    try {
+      await this.request(`/collections/${collectionUid}`, {
+        method: 'DELETE'
+      });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return;
+      }
+      throw error;
+    }
+  }
+
   async getEnvironment(uid: string): Promise<unknown> {
     const response = await this.request(`/environments/${uid}`);
     return response?.environment;

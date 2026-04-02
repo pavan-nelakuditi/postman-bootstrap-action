@@ -28735,10 +28735,10 @@ var openAlphaActionContract = {
       allowedValues: ["true", "false"]
     },
     "collection-sync-mode": {
-      description: "Collection lifecycle policy: reuse existing collections, refresh them from the latest spec, or version them by release label.",
+      description: "Collection lifecycle policy: refresh tracked collections from the latest spec or version them by release label.",
       required: false,
       default: "refresh",
-      allowedValues: ["reuse", "refresh", "version"]
+      allowedValues: ["refresh", "version"]
     },
     "spec-sync-mode": {
       description: "Spec lifecycle policy: update the canonical spec or create/reuse a versioned spec for the resolved release label.",
@@ -29672,6 +29672,24 @@ var PostmanAssetsClient = class {
     const response = await this.request(`/collections/${uid}`);
     return response?.collection;
   }
+  async updateCollection(collectionUid, collection) {
+    await this.request(`/collections/${collectionUid}`, {
+      method: "PUT",
+      body: JSON.stringify({ collection })
+    });
+  }
+  async deleteCollection(collectionUid) {
+    try {
+      await this.request(`/collections/${collectionUid}`, {
+        method: "DELETE"
+      });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return;
+      }
+      throw error;
+    }
+  }
   async getEnvironment(uid) {
     const response = await this.request(`/environments/${uid}`);
     return response?.environment;
@@ -30095,7 +30113,7 @@ function parseBooleanInput(value, defaultValue) {
   return defaultValue;
 }
 function parseCollectionSyncMode(value) {
-  if (value === "reuse" || value === "version") {
+  if (value === "version") {
     return value;
   }
   return "refresh";
@@ -30330,6 +30348,30 @@ function findCloudResourceId(map, matcher) {
   }
   const match = Object.entries(map).find(([filePath]) => matcher(filePath));
   return match?.[1];
+}
+function sanitizeCollectionForUpdate(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeCollectionForUpdate(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = { ...value };
+  delete record.id;
+  delete record.uid;
+  delete record._postman_id;
+  delete record.response;
+  if (record.request && typeof record.request === "object" && record.request !== null) {
+    const request = { ...record.request };
+    delete request.id;
+    delete request.uid;
+    delete request._postman_id;
+    record.request = request;
+  }
+  for (const [key, entry] of Object.entries(record)) {
+    record[key] = sanitizeCollectionForUpdate(entry);
+  }
+  return record;
 }
 var SPEC_SUMMARY_MAX_LEN = 200;
 var SPEC_HTTP_METHODS = /* @__PURE__ */ new Set([
@@ -30593,37 +30635,35 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
     }
   }
-  let baselineCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.smokeCollectionId;
-  let contractCollectionId = inputs.collectionSyncMode === "refresh" ? void 0 : inputs.contractCollectionId;
-  if (inputs.collectionSyncMode !== "refresh") {
-    const cloudCollections = resourcesState?.cloudResources?.collections;
-    if (!baselineCollectionId) {
-      baselineCollectionId = findCloudResourceId(
-        cloudCollections,
-        (filePath) => filePath.includes("[Baseline]")
-      );
-      if (baselineCollectionId) {
-        dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
-      }
+  let baselineCollectionId = inputs.baselineCollectionId;
+  let smokeCollectionId = inputs.smokeCollectionId;
+  let contractCollectionId = inputs.contractCollectionId;
+  const cloudCollections = resourcesState?.cloudResources?.collections;
+  if (!baselineCollectionId) {
+    baselineCollectionId = findCloudResourceId(
+      cloudCollections,
+      (filePath) => filePath.includes("[Baseline]")
+    );
+    if (baselineCollectionId) {
+      dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
     }
-    if (!smokeCollectionId) {
-      smokeCollectionId = findCloudResourceId(
-        cloudCollections,
-        (filePath) => filePath.includes("[Smoke]")
-      );
-      if (smokeCollectionId) {
-        dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
-      }
+  }
+  if (!smokeCollectionId) {
+    smokeCollectionId = findCloudResourceId(
+      cloudCollections,
+      (filePath) => filePath.includes("[Smoke]")
+    );
+    if (smokeCollectionId) {
+      dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
     }
-    if (!contractCollectionId) {
-      contractCollectionId = findCloudResourceId(
-        cloudCollections,
-        (filePath) => filePath.includes("[Contract]")
-      );
-      if (contractCollectionId) {
-        dependencies.core.info("Resolved contract-collection-id from .postman/resources.yaml");
-      }
+  }
+  if (!contractCollectionId) {
+    contractCollectionId = findCloudResourceId(
+      cloudCollections,
+      (filePath) => filePath.includes("[Contract]")
+    );
+    if (contractCollectionId) {
+      dependencies.core.info("Resolved contract-collection-id from .postman/resources.yaml");
     }
   }
   if (specId) {
@@ -30696,43 +30736,106 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     dependencies.core,
     "Generate Collections from Spec",
     async () => {
-      const shouldReuseCollections = inputs.collectionSyncMode !== "refresh";
       const assetProjectName = inputs.collectionSyncMode === "version" ? createAssetProjectName(inputs, releaseLabel) : inputs.projectName;
-      outputs["baseline-collection-id"] = shouldReuseCollections ? baselineCollectionId || "" : "";
-      outputs["smoke-collection-id"] = shouldReuseCollections ? smokeCollectionId || "" : "";
-      outputs["contract-collection-id"] = shouldReuseCollections ? contractCollectionId || "" : "";
-      if (!outputs["baseline-collection-id"]) {
-        outputs["baseline-collection-id"] = await dependencies.postman.generateCollection(
+      const shouldReuseCollections = inputs.collectionSyncMode !== "refresh";
+      const temporaryCollectionIds = /* @__PURE__ */ new Set();
+      const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
+      const updateCollection = dependencies.postman.updateCollection?.bind(dependencies.postman);
+      const deleteCollection = dependencies.postman.deleteCollection?.bind(dependencies.postman);
+      const refreshCollectionInPlace = async (prefix, existingCollectionId) => {
+        const generatedCollectionId = await dependencies.postman.generateCollection(
           outputs["spec-id"],
           assetProjectName,
-          "[Baseline]"
+          prefix
         );
-      } else {
+        if (!existingCollectionId) {
+          dependencies.core.info(
+            `No existing ${prefix} collection found; using newly generated collection ${generatedCollectionId}`
+          );
+          return generatedCollectionId;
+        }
+        if (!getCollection || !updateCollection) {
+          throw new Error(
+            "Refresh-in-place requires getCollection and updateCollection support from the Postman client"
+          );
+        }
+        const generatedCollection = await getCollection(generatedCollectionId);
+        await updateCollection(
+          existingCollectionId,
+          sanitizeCollectionForUpdate(generatedCollection)
+        );
+        temporaryCollectionIds.add(generatedCollectionId);
         dependencies.core.info(
-          `Using existing baseline collection: ${outputs["baseline-collection-id"]}`
+          `Refreshed existing ${prefix} collection ${existingCollectionId} with temporary collection ${generatedCollectionId}`
         );
+        return existingCollectionId;
+      };
+      if (shouldReuseCollections) {
+        outputs["baseline-collection-id"] = baselineCollectionId || "";
+        outputs["smoke-collection-id"] = smokeCollectionId || "";
+        outputs["contract-collection-id"] = contractCollectionId || "";
+        if (!outputs["baseline-collection-id"]) {
+          outputs["baseline-collection-id"] = await dependencies.postman.generateCollection(
+            outputs["spec-id"],
+            assetProjectName,
+            "[Baseline]"
+          );
+        } else {
+          dependencies.core.info(
+            `Using existing baseline collection: ${outputs["baseline-collection-id"]}`
+          );
+        }
+        if (!outputs["smoke-collection-id"]) {
+          outputs["smoke-collection-id"] = await dependencies.postman.generateCollection(
+            outputs["spec-id"],
+            assetProjectName,
+            "[Smoke]"
+          );
+        } else {
+          dependencies.core.info(
+            `Using existing smoke collection: ${outputs["smoke-collection-id"]}`
+          );
+        }
+        if (!outputs["contract-collection-id"]) {
+          outputs["contract-collection-id"] = await dependencies.postman.generateCollection(
+            outputs["spec-id"],
+            assetProjectName,
+            "[Contract]"
+          );
+        } else {
+          dependencies.core.info(
+            `Using existing contract collection: ${outputs["contract-collection-id"]}`
+          );
+        }
+        return;
       }
-      if (!outputs["smoke-collection-id"]) {
-        outputs["smoke-collection-id"] = await dependencies.postman.generateCollection(
-          outputs["spec-id"],
-          assetProjectName,
-          "[Smoke]"
-        );
-      } else {
-        dependencies.core.info(
-          `Using existing smoke collection: ${outputs["smoke-collection-id"]}`
-        );
-      }
-      if (!outputs["contract-collection-id"]) {
-        outputs["contract-collection-id"] = await dependencies.postman.generateCollection(
-          outputs["spec-id"],
-          assetProjectName,
-          "[Contract]"
-        );
-      } else {
-        dependencies.core.info(
-          `Using existing contract collection: ${outputs["contract-collection-id"]}`
-        );
+      outputs["baseline-collection-id"] = await refreshCollectionInPlace(
+        "[Baseline]",
+        baselineCollectionId
+      );
+      outputs["smoke-collection-id"] = await refreshCollectionInPlace(
+        "[Smoke]",
+        smokeCollectionId
+      );
+      outputs["contract-collection-id"] = await refreshCollectionInPlace(
+        "[Contract]",
+        contractCollectionId
+      );
+      for (const tempCollectionId of temporaryCollectionIds) {
+        try {
+          if (!deleteCollection) {
+            dependencies.core.warning(
+              `Temporary collection ${tempCollectionId} was not deleted because deleteCollection is unavailable`
+            );
+            continue;
+          }
+          await deleteCollection(tempCollectionId);
+          dependencies.core.info(`Deleted temporary generated collection ${tempCollectionId}`);
+        } catch (error) {
+          dependencies.core.warning(
+            `Failed to delete temporary collection ${tempCollectionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
     }
   );

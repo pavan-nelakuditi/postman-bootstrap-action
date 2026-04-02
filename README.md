@@ -218,7 +218,7 @@ steps:
 | `smoke-collection-id` | | Reuse an existing smoke collection. |
 | `contract-collection-id` | | Reuse an existing contract collection. |
 | `sync-examples` | `true` | Whether linked spec/collection relations should enable example syncing during cloud linkage. |
-| `collection-sync-mode` | `refresh` | Collection lifecycle policy. `reuse` keeps existing collections, `refresh` regenerates the current collection set from the latest spec, and `version` creates or reuses release-scoped collections. |
+| `collection-sync-mode` | `refresh` | Collection lifecycle policy. `refresh` keeps the tracked collection IDs while updating them from the latest spec, and `version` creates or reuses release-scoped collections. |
 | `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
 | `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
 | `project-name` | | Service name used in workspace and asset naming. |

@@ -52,7 +52,6 @@ describe('open-alpha action contract', () => {
 
     expect(openAlphaActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
     expect(openAlphaActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
-      'reuse',
       'refresh',
       'version'
     ]);

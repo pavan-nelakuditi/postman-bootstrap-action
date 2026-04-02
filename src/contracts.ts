@@ -51,10 +51,10 @@ export const openAlphaActionContract: BetaActionContract = {
     },
     'collection-sync-mode': {
       description:
-        'Collection lifecycle policy: reuse existing collections, refresh them from the latest spec, or version them by release label.',
+        'Collection lifecycle policy: refresh tracked collections from the latest spec or version them by release label.',
       required: false,
       default: 'refresh',
-      allowedValues: ['reuse', 'refresh', 'version']
+      allowedValues: ['refresh', 'version']
     },
     'spec-sync-mode': {
       description:
