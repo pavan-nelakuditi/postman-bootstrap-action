@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
+import { HttpError } from './lib/http-error.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
@@ -981,10 +982,20 @@ export async function runBootstrap(
         }
 
         const generatedCollection = await getCollection(generatedCollectionId);
-        await updateCollection(
-          existingCollectionId,
-          sanitizeCollectionForUpdate(generatedCollection)
-        );
+        try {
+          await updateCollection(
+            existingCollectionId,
+            sanitizeCollectionForUpdate(generatedCollection)
+          );
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            dependencies.core.warning(
+              `Existing ${prefix} collection ${existingCollectionId} was not found during refresh; using newly generated collection ${generatedCollectionId}`
+            );
+            return generatedCollectionId;
+          }
+          throw error;
+        }
         temporaryCollectionIds.add(generatedCollectionId);
         dependencies.core.info(
           `Refreshed existing ${prefix} collection ${existingCollectionId} with temporary collection ${generatedCollectionId}`

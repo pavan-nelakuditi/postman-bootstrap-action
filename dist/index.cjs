@@ -30756,10 +30756,20 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           );
         }
         const generatedCollection = await getCollection(generatedCollectionId);
-        await updateCollection(
-          existingCollectionId,
-          sanitizeCollectionForUpdate(generatedCollection)
-        );
+        try {
+          await updateCollection(
+            existingCollectionId,
+            sanitizeCollectionForUpdate(generatedCollection)
+          );
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            dependencies.core.warning(
+              `Existing ${prefix} collection ${existingCollectionId} was not found during refresh; using newly generated collection ${generatedCollectionId}`
+            );
+            return generatedCollectionId;
+          }
+          throw error;
+        }
         temporaryCollectionIds.add(generatedCollectionId);
         dependencies.core.info(
           `Refreshed existing ${prefix} collection ${existingCollectionId} with temporary collection ${generatedCollectionId}`

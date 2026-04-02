@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { stringify as stringifyYaml } from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { HttpError } from '../src/lib/http-error.js';
 import {
   lintSpecViaCli,
   normalizeSpecDocument,
@@ -578,6 +579,92 @@ describe('bootstrap action', () => {
       'smoke-collection-id': 'col-smoke-new',
       'contract-collection-id': 'col-contract-new'
     });
+  });
+
+  it('refresh mode falls back to newly generated collections when tracked targets are stale', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const generatedIds = ['col-baseline-fresh', 'col-smoke-fresh', 'col-contract-fresh'];
+    const fetchedCollections = new Map(
+      generatedIds.map((id, index) => [
+        id,
+        {
+          info: {
+            name: ['[Baseline]', '[Smoke]', '[Contract]'][index]
+          },
+          item: [
+            {
+              name: 'Generated request',
+              request: {
+                method: 'GET',
+                url: 'https://example.test'
+              }
+            }
+          ]
+        }
+      ])
+    );
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      deleteCollection: vi.fn().mockResolvedValue(undefined),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn(),
+      updateCollection: vi.fn().mockRejectedValue(
+        new HttpError({
+          method: 'PUT',
+          url: 'https://api.getpostman.com/collections/stale',
+          status: 404,
+          statusText: 'Not Found',
+          responseBody: '{"error":{"message":"missing"}}'
+        })
+      ),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        specId: 'spec-existing',
+        baselineCollectionId: 'col-baseline-stale',
+        smokeCollectionId: 'col-smoke-stale',
+        contractCollectionId: 'col-contract-stale',
+        collectionSyncMode: 'refresh'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.deleteCollection).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-fresh',
+      'smoke-collection-id': 'col-smoke-fresh',
+      'contract-collection-id': 'col-contract-fresh'
+    });
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Existing [Smoke] collection col-smoke-stale was not found during refresh')
+      )
+    ).toBe(true);
   });
 
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {
